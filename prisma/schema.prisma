@@ -1,0 +1,981 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model Tenant {
+  id                Int               @id @default(autoincrement())
+  name              String
+  branchName        String?
+  owner             String?
+  managerName       String?
+  managerEmail      String?
+  phone             String?
+  location          String?
+  status            String            @default("Active")
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  Attendance        Attendance[]
+  classes           Class[]
+  equipment         Equipment[]
+  expenses          Expense[]
+  inventory         Inventory[]
+  invoices          Invoice[]
+  leads             Lead[]
+  lockers           Locker[]
+  members           Member[]
+  plans             MembershipPlan[]
+  payroll           Payroll[]
+  users             User[]
+  announcements     Announcement[]
+  coupons           Coupon[]
+  storeCategories   StoreCategory[]
+  storeProducts     StoreProduct[]
+  storeOrders       StoreOrder[]
+  Amenity           Amenity[]
+  tasks             Task[]
+  expenseCategories ExpenseCategory[]
+  serviceRequests   ServiceRequest[]
+  ptPackages        PTPackage[]
+  ptAccounts        PTMemberAccount[]
+  ptSessions        PTSession[]
+
+  @@map("tenant")
+}
+
+model ExpenseCategory {
+  id          Int      @id @default(autoincrement())
+  tenantId    Int
+  name        String
+  description String?  @db.Text
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId], map: "expensecat_tenantId_fkey")
+  @@map("expense_category")
+}
+
+model User {
+  id             Int          @id @default(autoincrement())
+  email          String       @unique
+  password       String
+  name           String
+  phone          String?
+  role           Role
+  status         String       @default("Active")
+  avatar         String?
+  tenantId       Int?
+  joinedDate     DateTime     @default(now())
+  lastLogin      DateTime?
+  address        String?      @db.Text
+  accountNumber  String?
+  baseSalary     Decimal?     @db.Decimal(10, 2)
+  config         String?      @db.LongText
+  department     String?
+  documents      String?      @db.LongText
+  ifsc           String?
+  attendances    Attendance[]
+  classes        Class[]
+  assignedLeads  Lead[]       @relation("LeadAssignee")
+  assignedMember Member[]     @relation("TrainerToMember")
+  assignedTasks  Task[]       @relation("AssignedTasks")
+  createdTasks   Task[]       @relation("CreatedTasks")
+  ptSessions     PTSession[]  @relation("TrainerSessions")
+  tenant         Tenant?      @relation(fields: [tenantId], references: [id])
+
+  sentMessages     ChatMessage[] @relation("SentMessages")
+  receivedMessages ChatMessage[] @relation("ReceivedMessages")
+  notifications    Notification[] @relation("UserNotifications")
+
+  @@index([tenantId], map: "user_tenantId_fkey")
+  @@map("user")
+}
+
+model Notification {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  title     String
+  message   String   @db.Text
+  type      String   @default("info") // info, success, warning, danger
+  read      Boolean  @default(false)
+  link      String?  // Optional path to redirect to
+  createdAt DateTime @default(now())
+  user      User     @relation("UserNotifications", fields: [userId], references: [id])
+
+  @@index([userId], map: "notification_userId_fkey")
+  @@map("notification")
+}
+
+model SaaSPlan {
+  id          Int      @id @default(autoincrement())
+  name        String
+  price       Decimal  @db.Decimal(10, 2)
+  period      String
+  features    String?  @db.LongText
+  status      String   @default("Active")
+  benefits    String?  @db.LongText
+  createdAt   DateTime @default(now())
+  description String?  @db.Text
+  limits      String?  @db.LongText
+  opsLimits   String?  @db.LongText
+  updatedAt   DateTime @updatedAt
+
+  @@map("saasplan")
+}
+
+model Subscription {
+  id            String   @id @default(uuid())
+  tenantId      Int
+  planId        Int
+  subscriber    String
+  startDate     DateTime
+  endDate       DateTime
+  status        String
+  paymentStatus String
+
+  @@map("subscription")
+}
+
+model AuditLog {
+  id             Int      @id @default(autoincrement())
+  userId         Int
+  action         String
+  affectedEntity String?
+  details        String?  @db.Text
+  module         String
+  ip             String?
+  status         String   @default("Open")
+  createdAt      DateTime @default(now())
+
+  @@map("auditlog")
+}
+
+model WebhookLog {
+  id         String   @id @default(uuid())
+  event      String
+  status     String
+  method     String
+  endpoint   String
+  statusCode Int
+  payload    String?  @db.LongText
+  createdAt  DateTime @default(now())
+
+  @@map("webhooklog")
+}
+
+model SaaSSettings {
+  id                 Int     @id @default(autoincrement())
+  siteName           String  @default("Gym CRM")
+  currency           String  @default("INR")
+  timezone           String  @default("IST")
+  invoicePrefix      String  @default("INV-")
+  invoiceStartNumber Int     @default(1001)
+  gstPercent         Decimal @default(18.00) @db.Decimal(5, 2)
+  bookingEnabled     Boolean @default(true)
+  creditsPerBooking  Int     @default(1)
+  maxBookingsPerDay  Int     @default(2)
+  maxBookingsPerWeek Int     @default(10)
+  cancellationWindow Int     @default(4)
+  advanceBookingDays Int     @default(7)
+  penaltyEnabled     Boolean @default(true)
+  penaltyCredits     Int     @default(1)
+  contactAddress     String? @db.Text
+  contactPhone       String?
+  supportEmail       String?
+
+  @@map("saassettings")
+}
+
+model SaasPayment {
+  id         String   @id @default(uuid())
+  paymentId  String   @unique
+  tenantId   Int
+  tenantName String
+  amount     Decimal  @db.Decimal(10, 2)
+  method     String
+  status     String   @default("Success")
+  date       DateTime @default(now())
+
+  @@map("saaspayment")
+}
+
+model Device {
+  id           Int      @id @default(autoincrement())
+  name         String
+  type         String
+  status       String   @default("connected")
+  message      String?
+  tenantId     Int?
+  lastSeen     DateTime @default(now())
+  entriesToday Int      @default(0)
+  ipAddress    String?
+
+  @@map("device")
+}
+
+model Member {
+  id              Int               @id @default(autoincrement())
+  memberId        String            @unique
+  userId          Int?              @unique
+  tenantId        Int
+  planId          Int?
+  joinDate        DateTime          @default(now())
+  expiryDate      DateTime?
+  status          String            @default("Active")
+  trainerId       Int?
+  avatar          String?
+  benefits        String?           @db.LongText
+  email           String?
+  emergencyName   String?
+  emergencyPhone  String?
+  fitnessGoal     String?
+  gender          String?
+  medicalHistory  String?           @db.Text
+  name            String?
+  phone           String?
+  targetWeight    Decimal?          @db.Decimal(5, 2)
+  targetBodyFat   Decimal?          @db.Decimal(5, 2)
+  dob             String?
+  source          String?
+  referralCode    String?
+  idType          String?
+  idNumber        String?
+  address         String?           @db.Text
+  bookings        Booking[]
+  storeOrders     StoreOrder[]
+  lockers         Locker[]
+  invoices        Invoice[]
+  attendances     Attendance[]
+  serviceRequests ServiceRequest[]
+  ptAccounts      PTMemberAccount[]
+  ptSessions      PTSession[]
+  plan            MembershipPlan?   @relation(fields: [planId], references: [id])
+  tenant          Tenant            @relation(fields: [tenantId], references: [id])
+  trainer         User?             @relation("TrainerToMember", fields: [trainerId], references: [id])
+
+  @@index([planId], map: "member_planId_fkey")
+  @@index([tenantId], map: "member_tenantId_fkey")
+  @@index([trainerId], map: "member_trainerId_fkey")
+  @@map("member")
+}
+
+model ServiceRequest {
+  id        Int      @id @default(autoincrement())
+  tenantId  Int      @default(1)
+  memberId  Int
+  type      String
+  rawType   String?
+  details   String?  @db.Text
+  status    String   @default("Pending")
+  date      DateTime @default(now())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  member Member @relation(fields: [memberId], references: [id])
+
+  @@index([tenantId], map: "service_request_tenantId_fkey")
+  @@index([memberId], map: "service_request_memberId_fkey")
+  @@map("service_request")
+}
+
+model MembershipPlan {
+  id                 Int      @id @default(autoincrement())
+  tenantId           Int
+  name               String
+  price              Decimal  @db.Decimal(10, 2)
+  duration           Int
+  status             String   @default("Active")
+  benefits           String?  @db.LongText
+  cancellationWindow Int      @default(4)
+  createdAt          DateTime @default(now())
+  creditsPerBooking  Int      @default(1)
+  description        String?  @db.Text
+  durationType       String   @default("Months")
+  maxBookingsPerDay  Int      @default(1)
+  maxBookingsPerWeek Int      @default(7)
+  updatedAt          DateTime @updatedAt
+  members            Member[]
+  tenant             Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId], map: "membershipplan_tenantId_fkey")
+  @@map("membershipplan")
+}
+
+model Lead {
+  id               Int        @id @default(autoincrement())
+  tenantId         Int
+  name             String
+  email            String?
+  phone            String
+  source           String?
+  status           String     @default("New")
+  createdAt        DateTime   @default(now())
+  age              Int?
+  assignedToId     Int?
+  budget           String?
+  gender           String?
+  interests        String?    @db.LongText
+  nextFollowUp     DateTime?
+  notes            String?    @db.Text
+  preferredContact String?    @default("WhatsApp")
+  updatedAt        DateTime   @updatedAt
+  followUps        FollowUp[]
+  assignedTo       User?      @relation("LeadAssignee", fields: [assignedToId], references: [id])
+  tenant           Tenant     @relation(fields: [tenantId], references: [id])
+
+  @@index([assignedToId], map: "lead_assignedToId_fkey")
+  @@index([tenantId], map: "lead_tenantId_fkey")
+  @@map("lead")
+}
+
+model FollowUp {
+  id        Int       @id @default(autoincrement())
+  leadId    Int
+  notes     String?
+  status    String
+  nextDate  DateTime?
+  createdAt DateTime  @default(now())
+  lead      Lead      @relation(fields: [leadId], references: [id])
+
+  @@index([leadId], map: "followup_leadId_fkey")
+  @@map("followup")
+}
+
+model Class {
+  id              Int       @id @default(autoincrement())
+  tenantId        Int
+  name            String
+  description     String?   @db.Text
+  trainerId       Int?
+  schedule        String    @db.LongText
+  maxCapacity     Int
+  duration        String?
+  location        String?
+  requiredBenefit String?
+  status          String    @default("Scheduled")
+  bookings        Booking[]
+  tenant          Tenant    @relation(fields: [tenantId], references: [id])
+  trainer         User?     @relation(fields: [trainerId], references: [id])
+
+  @@index([tenantId], map: "class_tenantId_fkey")
+  @@index([trainerId], map: "class_trainerId_fkey")
+  @@map("class")
+}
+
+model Booking {
+  id       Int      @id @default(autoincrement())
+  memberId Int
+  classId  Int
+  date     DateTime
+  status   String   @default("Upcoming")
+  class    Class    @relation(fields: [classId], references: [id])
+  member   Member   @relation(fields: [memberId], references: [id])
+
+  @@index([classId], map: "booking_classId_fkey")
+  @@index([memberId], map: "booking_memberId_fkey")
+  @@map("booking")
+}
+
+model Inventory {
+  id           Int     @id @default(autoincrement())
+  tenantId     Int?
+  itemName     String
+  category     String
+  quantity     Int
+  unit         String
+  minThreshold Int     @default(5)
+  status       String  @default("In Stock")
+  tenant       Tenant? @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId], map: "inventory_tenantId_fkey")
+  @@map("inventory")
+}
+
+model Locker {
+  id           Int      @id @default(autoincrement())
+  tenantId     Int?
+  number       String
+  status       String   @default("Available") // Available, Assigned, Maintenance, Reserved
+  size         String   @default("Medium") // Small, Medium, Large
+  area         String?
+  notes        String?  @db.Text
+  isChargeable Boolean  @default(false)
+  price        Decimal  @default(0.00) @db.Decimal(10, 2)
+  isPaid       Boolean  @default(false)
+  assignedToId Int?
+  assignedTo   Member?  @relation(fields: [assignedToId], references: [id])
+  tenant       Tenant?  @relation(fields: [tenantId], references: [id])
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([tenantId], map: "locker_tenantId_fkey")
+  @@index([assignedToId], map: "locker_memberId_fkey")
+  @@map("locker")
+}
+
+model Equipment {
+  id             Int                  @id @default(autoincrement())
+  tenantId       Int?
+  name           String
+  status         String               @default("Operational")
+  lastService    DateTime?
+  nextService    DateTime?
+  brand          String?
+  category       String?
+  location       String?
+  model          String?
+  purchaseDate   DateTime?
+  purchasePrice  Decimal?             @db.Decimal(10, 2)
+  serialNumber   String?
+  warrantyExpiry DateTime?
+  tenant         Tenant?              @relation(fields: [tenantId], references: [id])
+  maintenance    MaintenanceRequest[]
+
+  @@index([tenantId], map: "equipment_tenantId_fkey")
+  @@map("equipment")
+}
+
+model MaintenanceRequest {
+  id          Int       @id @default(autoincrement())
+  equipmentId Int
+  issue       String
+  description String?   @db.Text
+  priority    String
+  status      String    @default("Pending")
+  cost        Decimal?  @default(0.00) @db.Decimal(10, 2)
+  createdAt   DateTime  @default(now())
+  completedAt DateTime?
+  equipment   Equipment @relation(fields: [equipmentId], references: [id])
+
+  @@index([equipmentId], map: "maintenancerequest_equipmentId_fkey")
+  @@map("maintenancerequest")
+}
+
+model Invoice {
+  id            Int           @id @default(autoincrement())
+  tenantId      Int
+  invoiceNumber String        @unique
+  memberId      Int?
+  subtotal      Decimal       @default(0.00) @db.Decimal(10, 2)
+  taxRate       Decimal       @default(0.00) @db.Decimal(10, 2)
+  taxAmount     Decimal       @default(0.00) @db.Decimal(10, 2)
+  discount      Decimal       @default(0.00) @db.Decimal(10, 2)
+  amount        Decimal       @db.Decimal(10, 2)
+  status        String        @default("Unpaid")
+  dueDate       DateTime
+  paidDate      DateTime?
+  paymentMode   String        @default("Cash")
+  notes         String?       @db.Text
+  items         InvoiceItem[]
+  member        Member?       @relation(fields: [memberId], references: [id])
+  tenant        Tenant        @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId], map: "invoice_tenantId_fkey")
+  @@map("invoice")
+}
+
+model InvoiceItem {
+  id          Int     @id @default(autoincrement())
+  invoiceId   Int
+  description String
+  quantity    Int
+  rate        Decimal @db.Decimal(10, 2)
+  amount      Decimal @db.Decimal(10, 2)
+  invoice     Invoice @relation(fields: [invoiceId], references: [id])
+
+  @@index([invoiceId], map: "invoiceitem_invoiceId_fkey")
+  @@map("invoice_item")
+}
+
+model Expense {
+  id       Int      @id @default(autoincrement())
+  tenantId Int
+  title    String
+  category String
+  amount   Decimal  @db.Decimal(10, 2)
+  date     DateTime
+  status   String   @default("Paid")
+  addedBy  String?
+  notes    String?  @db.Text
+  tenant   Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId], map: "expense_tenantId_fkey")
+  @@map("expense")
+}
+
+model Payroll {
+  id       Int     @id @default(autoincrement())
+  tenantId Int
+  staffId  Int
+  amount   Decimal @db.Decimal(10, 2)
+  month    Int
+  year     Int
+  status   String  @default("Pending")
+  tenant   Tenant  @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId], map: "payroll_tenantId_fkey")
+  @@map("payroll")
+}
+
+model Attendance {
+  id       Int       @id @default(autoincrement())
+  userId   Int?
+  memberId Int?
+  checkIn  DateTime?
+  checkOut DateTime?
+  type     String
+  date     DateTime  @default(now()) @db.Date
+  status   String    @default("Present")
+  tenantId Int       @default(1)
+  tenant   Tenant    @relation(fields: [tenantId], references: [id])
+  user     User?     @relation(fields: [userId], references: [id])
+  member   Member?   @relation(fields: [memberId], references: [id])
+
+  @@index([tenantId], map: "attendance_tenantId_fkey")
+  @@index([userId], map: "attendance_userId_fkey")
+  @@index([memberId], map: "attendance_memberId_fkey")
+  @@map("attendance")
+}
+
+model LeaveRequest {
+  id        Int      @id @default(autoincrement())
+  tenantId  Int      @default(1)
+  userId    Int
+  type      String   @default("Vacation")
+  startDate DateTime
+  endDate   DateTime
+  reason    String   @db.Text
+  status    String   @default("Pending")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId], map: "leave_request_tenantId_fkey")
+  @@index([userId], map: "leave_request_userId_fkey")
+  @@map("leave_request")
+}
+
+model TrainerAvailability {
+  id             Int      @id @default(autoincrement())
+  tenantId       Int      @default(1)
+  trainerId      Int      @unique
+  weeklySchedule String   @db.LongText
+  preferences    String   @db.LongText
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@map("trainer_availability")
+}
+
+model Task {
+  id           Int      @id @default(autoincrement())
+  title        String
+  assignedToId Int
+  creatorId    Int
+  priority     String
+  dueDate      DateTime
+  status       String   @default("Pending")
+  description  String?  @db.Text
+  tenantId     Int?
+
+  assignedTo User    @relation("AssignedTasks", fields: [assignedToId], references: [id])
+  creator    User    @relation("CreatedTasks", fields: [creatorId], references: [id])
+  tenant     Tenant? @relation(fields: [tenantId], references: [id])
+
+  @@index([assignedToId], map: "Task_assignedToId_fkey")
+  @@index([creatorId], map: "Task_creatorId_fkey")
+  @@map("task")
+}
+
+model Wallet {
+  id       Int     @id @default(autoincrement())
+  memberId Int     @unique
+  balance  Decimal @default(0.00) @db.Decimal(10, 2)
+
+  @@map("wallet")
+}
+
+model Transaction {
+  id          Int      @id @default(autoincrement())
+  walletId    Int
+  amount      Decimal  @db.Decimal(10, 2)
+  type        String
+  description String?
+  createdAt   DateTime @default(now())
+
+  @@index([walletId], map: "Transaction_walletId_fkey")
+  @@map("transaction")
+}
+
+model MemberProgress {
+  id           Int      @id @default(autoincrement())
+  memberId     Int
+  weight       Decimal? @db.Decimal(5, 2)
+  bodyFat      Decimal? @db.Decimal(5, 2)
+  notes        String?
+  date         DateTime @default(now())
+  measurements String?  @db.LongText
+  photos       String?  @db.LongText
+
+  @@index([memberId], map: "MemberProgress_memberId_fkey")
+  @@map("memberprogress")
+}
+
+model Announcement {
+  id         Int      @id @default(autoincrement())
+  tenantId   Int      @default(1)
+  authorId   Int
+  title      String
+  content    String   @db.Text
+  targetRole String   @default("all")
+  priority   Int      @default(0)
+  status     String   @default("Active")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @default(now()) @updatedAt
+  tenant     Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@index([authorId], map: "Announcement_authorId_fkey")
+  @@map("announcement")
+}
+
+model MessageTemplate {
+  id        Int      @id @default(autoincrement())
+  tenantId  Int      @default(1)
+  name      String
+  content   String   @db.LongText
+  channel   String // WhatsApp, SMS, Email
+  category  String // Welcome, Reminder, Promo, etc.
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("message_template")
+}
+
+model CommunicationLog {
+  id        Int      @id @default(autoincrement())
+  tenantId  Int      @default(1)
+  senderId  Int?
+  memberId  Int?
+  channel   String // WhatsApp, SMS, Email
+  message   String   @db.LongText
+  status    String   @default("Sent") // Sent, Failed, Pending
+  createdAt DateTime @default(now())
+
+  @@map("communication_log")
+}
+
+model TenantSettings {
+  id              Int     @id @default(autoincrement())
+  tenantId        Int     @unique
+  logo            String?
+  timezone        String  @default("UTC")
+  currency        String  @default("USD")
+  whatsappEnabled Boolean @default(false)
+  fiscalYearStart String  @default("April")
+
+  // Email Notifications
+  membershipReminders Boolean @default(true)
+  paymentReceipts     Boolean @default(true)
+  classNotifications  Boolean @default(true)
+  announcements       Boolean @default(true)
+
+  // System Alerts
+  lowStockAlerts Boolean @default(true)
+  newLeadAlerts  Boolean @default(true)
+  paymentAlerts  Boolean @default(true)
+  taskReminders  Boolean @default(true)
+
+  // Security Settings
+  twoFactorAuth   Boolean @default(false)
+  sessionTimeout  Boolean @default(true)
+  sessionDuration String  @default("8")
+  loginAlerts     Boolean @default(true)
+  
+  // Google Reviews
+  googleBusinessEnabled Boolean @default(false)
+  googleReviewLink      String? @db.Text
+
+  @@map("tenantsettings")
+}
+
+model Reward {
+  id          Int      @id @default(autoincrement())
+  tenantId    Int?
+  memberId    Int?
+  name        String   @default("Reward")
+  points      Int      @default(0)
+  description String   @default("")
+  date        DateTime @default(now())
+
+  @@map("reward")
+}
+
+model Feedback {
+  id       Int      @id @default(autoincrement())
+  tenantId Int?
+  memberId Int?
+  rating   Int
+  comment  String   @db.Text
+  status              String   @default("Pending")
+  isPublishedToGoogle Boolean  @default(false)
+  date                DateTime @default(now())
+
+  @@map("feedback")
+}
+
+model DietPlan {
+  id        String    @id @default(uuid())
+  tenantId  Int       @default(1)
+  trainerId Int
+  clientId  Int
+  name      String
+  target    String
+  duration  String
+  calories  Int
+  macros    String    @db.LongText
+  meals     String    @db.LongText
+  notes     String?   @db.Text
+  status    String    @default("Active")
+  startDate DateTime?
+  endDate   DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@map("diet_plan")
+}
+
+model WorkoutPlan {
+  id             String    @id @default(uuid())
+  tenantId       Int       @default(1)
+  trainerId      Int
+  clientId       Int
+  name           String
+  level          String    @default("Beginner")
+  duration       String
+  goal           String
+  volume         String
+  timePerSession String
+  intensity      String
+  status         String    @default("Active")
+  days           String    @db.LongText
+  startDate      DateTime?
+  endDate        DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@map("workout_plan")
+}
+
+model Coupon {
+  id          Int       @id @default(autoincrement())
+  tenantId    Int?
+  code        String    @unique
+  description String?   @db.Text
+  type        String    @default("Percentage") // Percentage or Fixed
+  value       Decimal   @db.Decimal(10, 2)
+  minPurchase Decimal?  @default(0.00) @db.Decimal(10, 2)
+  maxUses     Int?      @default(0) // 0 for unlimited
+  usedCount   Int       @default(0)
+  startDate   DateTime  @default(now())
+  endDate     DateTime?
+  status      String    @default("Active")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  tenant      Tenant?   @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId], map: "coupon_tenantId_fkey")
+  @@map("coupon")
+}
+
+model StoreCategory {
+  id          Int            @id @default(autoincrement())
+  tenantId    Int?
+  name        String
+  description String?        @db.Text
+  image       String?
+  sortOrder   Int            @default(0)
+  status      String         @default("Active")
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  products    StoreProduct[]
+  tenant      Tenant?        @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId], map: "storecategory_tenantId_fkey")
+  @@map("store_category")
+}
+
+model StoreProduct {
+  id            Int              @id @default(autoincrement())
+  tenantId      Int?
+  categoryId    Int?
+  name          String
+  sku           String?          @unique
+  category      String?
+  price         Decimal          @db.Decimal(10, 2)
+  originalPrice Decimal?         @db.Decimal(10, 2)
+  costPrice     Decimal?         @db.Decimal(10, 2)
+  taxRate       Decimal?         @default(0.00) @db.Decimal(5, 2)
+  stock         Int              @default(0)
+  status        String           @default("Active")
+  description   String?          @db.Text
+  image         String?
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+  categoryRel   StoreCategory?   @relation(fields: [categoryId], references: [id])
+  tenant        Tenant?          @relation(fields: [tenantId], references: [id])
+  orderItems    StoreOrderItem[]
+
+  @@index([tenantId], map: "storeproduct_tenantId_fkey")
+  @@index([categoryId], map: "storeproduct_categoryId_fkey")
+  @@map("store_product")
+}
+
+model StoreOrder {
+  id              Int              @id @default(autoincrement())
+  tenantId        Int?
+  memberId        Int?
+  total           Decimal          @db.Decimal(10, 2)
+  itemsCount      Int              @default(0)
+  status          String           @default("Processing")
+  paymentMode     String?          @default("Cash")
+  referenceNumber String?
+  date            DateTime         @default(now())
+  guestName       String?
+  guestPhone      String?
+  guestEmail      String?
+  items           StoreOrderItem[]
+  member          Member?          @relation(fields: [memberId], references: [id])
+  tenant          Tenant?          @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId], map: "storeorder_tenantId_fkey")
+  @@index([memberId], map: "storeorder_memberId_fkey")
+  @@map("store_order")
+}
+
+model StoreOrderItem {
+  id         Int          @id @default(autoincrement())
+  orderId    Int
+  productId  Int
+  quantity   Int
+  priceAtBuy Decimal      @db.Decimal(10, 2)
+  order      StoreOrder   @relation(fields: [orderId], references: [id])
+  product    StoreProduct @relation(fields: [productId], references: [id])
+
+  @@index([orderId], map: "storeorderitem_orderId_fkey")
+  @@index([productId], map: "storeorderitem_productId_fkey")
+  @@map("store_order_item")
+}
+
+model Amenity {
+  id          Int      @id @default(autoincrement())
+  tenantId    Int
+  name        String
+  description String?  @db.Text
+  icon        String?
+  status      String   @default("Active")
+  gender      String   @default("UNISEX")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId], map: "amenity_tenantId_fkey")
+  @@map("amenity")
+}
+
+model PTPackage {
+  id            Int               @id @default(autoincrement())
+  tenantId      Int
+  name          String
+  sessionType   String            @default("Fixed Sessions")
+  totalSessions Int
+  price         Decimal           @db.Decimal(10, 2)
+  gstPercent    Decimal           @default(18.00) @db.Decimal(5, 2)
+  gstInclusive  Boolean           @default(false)
+  validityDays  Int               @default(90)
+  description   String?           @db.Text
+  status        String            @default("Active")
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+  tenant        Tenant            @relation(fields: [tenantId], references: [id])
+  accounts      PTMemberAccount[]
+
+  @@map("pt_package")
+}
+
+model PTMemberAccount {
+  id                Int         @id @default(autoincrement())
+  tenantId          Int
+  memberId          Int
+  packageId         Int
+  totalSessions     Int
+  remainingSessions Int
+  expiryDate        DateTime
+  status            String      @default("Active")
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+  member            Member      @relation(fields: [memberId], references: [id])
+  package           PTPackage   @relation(fields: [packageId], references: [id])
+  sessions          PTSession[]
+  tenant            Tenant      @relation(fields: [tenantId], references: [id])
+
+  @@index([memberId], map: "pt_member_account_memberId_fkey")
+  @@index([packageId], map: "pt_member_account_packageId_fkey")
+  @@index([tenantId], map: "pt_member_account_tenantId_fkey")
+  @@map("pt_member_account")
+}
+
+model PTSession {
+  id          Int              @id @default(autoincrement())
+  tenantId    Int
+  memberId    Int
+  trainerId   Int
+  ptAccountId Int?
+  date        DateTime
+  time        String?
+  duration    Int              @default(60)
+  notes       String?          @db.Text
+  status      String           @default("Completed")
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  member      Member           @relation(fields: [memberId], references: [id])
+  trainer     User             @relation("TrainerSessions", fields: [trainerId], references: [id])
+  ptAccount   PTMemberAccount? @relation(fields: [ptAccountId], references: [id])
+  tenant      Tenant           @relation(fields: [tenantId], references: [id])
+
+  @@index([memberId], map: "pt_session_memberId_fkey")
+  @@index([trainerId], map: "pt_session_trainerId_fkey")
+  @@index([ptAccountId], map: "pt_session_ptAccountId_fkey")
+  @@index([tenantId], map: "pt_session_tenantId_fkey")
+  @@map("pt_session")
+}
+
+enum Role {
+  SUPER_ADMIN
+  BRANCH_ADMIN
+  MANAGER
+  STAFF
+  TRAINER
+  MEMBER
+}
+
+model ChatMessage {
+  id         Int      @id @default(autoincrement())
+  tenantId   Int      @default(1)
+  senderId   Int
+  receiverId Int
+  message    String   @db.LongText
+  isRead     Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  sender   User @relation("SentMessages", fields: [senderId], references: [id])
+  receiver User @relation("ReceivedMessages", fields: [receiverId], references: [id])
+
+  @@index([senderId])
+  @@index([receiverId])
+  @@map("chat_message")
+}

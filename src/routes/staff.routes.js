@@ -1,0 +1,72 @@
+// gym_backend/src/routes/staff.routes.js
+const express = require('express');
+const {
+    searchMembers,
+    checkIn,
+    checkOut,
+    getMyAttendance,
+    recordAttendance,
+    getTasks,
+    createTask,
+    getTaskStats,
+    updateTaskStatus,
+    getBranchTeam,
+    getMyBranch,
+    getLockers,
+    assignLocker,
+    releaseLocker,
+    addLocker,
+    getPaymentHistory,
+    collectPayment,
+    getMembers,
+    getMemberById,
+    addMember,
+    getAttendanceReport,
+    getBookingReport,
+    getTodaysCheckIns,
+    bulkCreateLockers
+} = require('../controllers/staff.controller');
+const { protect, authorize } = require('../middleware/auth.middleware');
+
+const router = express.Router();
+
+router.use(protect);
+router.use(authorize('STAFF', 'TRAINER', 'SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'));
+
+// Members
+router.get('/members', getMembers);
+router.post('/members', addMember);
+router.get('/members/search', searchMembers);
+router.get('/members/:id', getMemberById);
+
+// Attendance
+router.get('/attendance/today', getTodaysCheckIns);
+router.get('/attendance/me', getMyAttendance);
+router.post('/attendance/record', recordAttendance);
+router.post('/attendance/check-in', checkIn);
+router.post('/attendance/check-out', checkOut);
+
+// Tasks
+router.get('/tasks', getTasks);
+router.post('/tasks', createTask);
+router.get('/tasks/stats', getTaskStats);
+router.patch('/tasks/:id/status', updateTaskStatus);
+router.get('/team', getBranchTeam);
+router.get('/my-branch', getMyBranch);
+
+// Lockers
+router.get('/lockers', getLockers);
+router.post('/lockers', addLocker);
+router.post('/lockers/bulk', bulkCreateLockers);
+router.post('/lockers/:id/assign', assignLocker);
+router.post('/lockers/:id/release', releaseLocker);
+
+// Payments
+router.get('/payments', getPaymentHistory);
+router.post('/payments', collectPayment);
+
+// Reports
+router.get('/reports/attendance', getAttendanceReport);
+router.get('/reports/bookings', getBookingReport);
+
+module.exports = router;
