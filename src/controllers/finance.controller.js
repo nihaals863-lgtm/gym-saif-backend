@@ -299,7 +299,12 @@ const settleInvoice = async (req, res) => {
 
             // Authorization check
             if (role !== 'SUPER_ADMIN' && order.tenantId !== tenantId) {
-                return res.status(403).json({ message: 'Not authorized to update this order' });
+                const isOwner = await prisma.tenant.findFirst({
+                    where: { id: order.tenantId, OR: [{ owner: req.user.email }, { owner: req.user.name }] }
+                });
+                if (!isOwner) {
+                    return res.status(403).json({ message: 'Not authorized to update this order' });
+                }
             }
 
             const updatedOrder = await prisma.storeOrder.update({
@@ -330,7 +335,12 @@ const settleInvoice = async (req, res) => {
 
         // Authorization check
         if (role !== 'SUPER_ADMIN' && invoice.tenantId !== tenantId) {
-            return res.status(403).json({ message: 'Not authorized to update this invoice' });
+            const isOwner = await prisma.tenant.findFirst({
+                where: { id: invoice.tenantId, OR: [{ owner: req.user.email }, { owner: req.user.name }] }
+            });
+            if (!isOwner) {
+                return res.status(403).json({ message: 'Not authorized to update this invoice' });
+            }
         }
 
         // Store reference number in notes since Invoice model doesn't have a dedicated referenceNumber field yet
@@ -496,7 +506,12 @@ const deleteExpense = async (req, res) => {
         }
 
         if (req.user.role !== 'SUPER_ADMIN' && expense.tenantId !== tenantId) {
-            return res.status(403).json({ message: 'Not authorized to delete this expense' });
+            const isOwner = await prisma.tenant.findFirst({
+                where: { id: expense.tenantId, OR: [{ owner: req.user.email }, { owner: req.user.name }] }
+            });
+            if (!isOwner) {
+                return res.status(403).json({ message: 'Not authorized to delete this expense' });
+            }
         }
 
         await prisma.expense.delete({
@@ -533,7 +548,12 @@ const deleteInvoice = async (req, res) => {
         if (!invoice) return res.status(404).json({ message: 'Invoice not found' });
 
         if (role !== 'SUPER_ADMIN' && invoice.tenantId !== userTenantId) {
-            return res.status(403).json({ message: 'Unauthorized' });
+            const isOwner = await prisma.tenant.findFirst({
+                where: { id: invoice.tenantId, OR: [{ owner: req.user.email }, { owner: req.user.name }] }
+            });
+            if (!isOwner) {
+                return res.status(403).json({ message: 'Unauthorized' });
+            }
         }
 
         // Delete line items first
@@ -771,7 +791,12 @@ const deleteExpenseCategory = async (req, res) => {
         }
 
         if (req.user.role !== 'SUPER_ADMIN' && category.tenantId !== tenantId) {
-            return res.status(403).json({ message: 'Not authorized to delete this expense category' });
+            const isOwner = await prisma.tenant.findFirst({
+                where: { id: category.tenantId, OR: [{ owner: req.user.email }, { owner: req.user.name }] }
+            });
+            if (!isOwner) {
+                return res.status(403).json({ message: 'Not authorized to delete this expense category' });
+            }
         }
 
         await prisma.expenseCategory.delete({

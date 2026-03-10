@@ -11,7 +11,7 @@ const getWhereClause = (req, prefix = '') => {
             return {};
         }
     }
-    
+
     return role === 'SUPER_ADMIN' ? {} : (prefix ? { [prefix]: { tenantId } } : { tenantId });
 };
 
@@ -122,13 +122,13 @@ const getDashboardStats = async (req, res) => {
         for (let i = 6; i >= 0; i--) {
             const date = new Date();
             date.setDate(date.getDate() - i);
-            const dStart = new Date(date.setHours(0, 0, 0, 0));
-            const dEnd = new Date(date.setHours(23, 59, 59, 999));
+            const dStart = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0, 0);
+            const dEnd = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59, 999);
 
             const dCount = await prisma.attendance.count({
                 where: {
                     ...whereClause,
-                    date: { gte: dStart, lte: dEnd }
+                    checkIn: { gte: dStart, lte: dEnd }
                 }
             });
 
@@ -154,6 +154,21 @@ const getDashboardStats = async (req, res) => {
             _count: { id: true }
         });
 
+        // 11. Today's Check-ins by Hour (5am - 10pm)
+        const todayCheckInsRaw = await prisma.attendance.findMany({
+            where: {
+                ...whereClause,
+                checkIn: { gte: startOfDay }
+            },
+            select: { checkIn: true }
+        });
+
+        const checkInsByHour = Array.from({ length: 24 }, (_, h) => ({
+            hour: h,
+            label: h === 0 ? '12am' : h < 12 ? `${h}am` : h === 12 ? '12pm' : `${h - 12}pm`,
+            count: todayCheckInsRaw.filter(a => new Date(a.checkIn).getHours() === h).length
+        })).filter(h => h.hour >= 5 && h.hour <= 22);
+
         res.json({
             stats: [
                 { id: 1, title: 'Total Members', value: totalMembers, icon: 'Users', trend: 'Live', color: 'primary' },
@@ -163,6 +178,7 @@ const getDashboardStats = async (req, res) => {
             ],
             revenueOverview,
             weeklyAttendance,
+            checkInsByHour,
             receivables: receivables._sum.amount || 0,
             membershipDistribution: distribution,
             equipment: equipmentData,
@@ -172,7 +188,7 @@ const getDashboardStats = async (req, res) => {
                 manualOverrides: 0
             },
             liveOccupancy: {
-                current: todaysCheckIns, // Simplification: today's checkins as current for demo
+                current: todaysCheckIns,
                 capacity: 50
             }
         });
@@ -686,7 +702,7 @@ const getPerformanceReport = async (req, res) => {
             orderBy: { _sum: { quantity: 'desc' } },
             take: 5
         });
-        
+
         // Enrich popular products with names
         const enrichedProducts = await Promise.all(popularProducts.map(async (p) => {
             const prod = await prisma.storeProduct.findUnique({ where: { id: p.productId }, select: { name: true } });

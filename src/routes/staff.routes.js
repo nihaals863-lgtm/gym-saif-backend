@@ -24,7 +24,8 @@ const {
     getAttendanceReport,
     getBookingReport,
     getTodaysCheckIns,
-    bulkCreateLockers
+    bulkCreateLockers,
+    getAttendanceHistory
 } = require('../controllers/staff.controller');
 const { protect, authorize } = require('../middleware/auth.middleware');
 
@@ -68,5 +69,6 @@ router.post('/payments', collectPayment);
 // Reports
 router.get('/reports/attendance', getAttendanceReport);
 router.get('/reports/bookings', getBookingReport);
+router.get('/attendance/history', getAttendanceHistory);
 
 module.exports = router;

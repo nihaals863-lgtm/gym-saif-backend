@@ -30,7 +30,10 @@ const {
     getMemberDashboard,
     updateMemberProfile,
     changePassword,
-    getMemberAttendance
+    getMemberAttendance,
+    memberCheckIn,
+    memberCheckOut,
+    getMemberCheckInStatus
 } = require('../controllers/member.controller');
 const {
     getProgress,
@@ -62,6 +65,9 @@ router.get('/profile', memberOnly, getMemberProfile);
 router.put('/profile', memberOnly, updateMemberProfile);
 router.post('/change-password', memberOnly, changePassword);
 router.get('/attendance', memberOnly, getMemberAttendance);
+router.get('/attendance/status', memberOnly, getMemberCheckInStatus);
+router.post('/attendance/check-in', memberOnly, memberCheckIn);
+router.post('/attendance/check-out', memberOnly, memberCheckOut);
 router.get('/classes', memberOnly, getAvailableClasses);
 
 // Progress

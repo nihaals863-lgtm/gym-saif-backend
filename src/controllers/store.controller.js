@@ -360,6 +360,18 @@ exports.updateProduct = async (req, res) => {
 exports.deleteProduct = async (req, res) => {
     try {
         const { id } = req.params;
+        const { role, tenantId, email, name: userName } = req.user;
+
+        const product = await prisma.storeProduct.findUnique({ where: { id: parseInt(id) } });
+        if (!product) return res.status(404).json({ message: 'Product not found' });
+
+        if (role !== 'SUPER_ADMIN' && product.tenantId !== tenantId) {
+            const isOwner = await prisma.tenant.findFirst({
+                where: { id: product.tenantId, OR: [{ owner: email }, { owner: userName }] }
+            });
+            if (!isOwner) return res.status(403).json({ message: 'Not authorized to delete this product' });
+        }
+
         await prisma.storeProduct.delete({
             where: { id: parseInt(id) }
         });
@@ -763,6 +775,18 @@ exports.updateCoupon = async (req, res) => {
 exports.deleteCoupon = async (req, res) => {
     try {
         const { id } = req.params;
+        const { role, tenantId, email, name: userName } = req.user;
+
+        const coupon = await prisma.coupon.findUnique({ where: { id: parseInt(id) } });
+        if (!coupon) return res.status(404).json({ message: 'Coupon not found' });
+
+        if (role !== 'SUPER_ADMIN' && coupon.tenantId !== tenantId) {
+            const isOwner = await prisma.tenant.findFirst({
+                where: { id: coupon.tenantId, OR: [{ owner: email }, { owner: userName }] }
+            });
+            if (!isOwner) return res.status(403).json({ message: 'Not authorized to delete this coupon' });
+        }
+
         await prisma.coupon.delete({
             where: { id: parseInt(id) }
         });

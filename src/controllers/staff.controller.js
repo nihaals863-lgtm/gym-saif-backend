@@ -979,6 +979,72 @@ const recordAttendance = async (req, res) => {
     }
 };
 
+const getAttendanceHistory = async (req, res) => {
+    try {
+        const { tenantId, role } = req.user;
+        const { startDate, endDate, search } = req.query;
+
+        // Build date range
+        const from = startDate ? new Date(startDate) : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+        from.setHours(0, 0, 0, 0);
+        const to = endDate ? new Date(endDate) : new Date();
+        to.setHours(23, 59, 59, 999);
+
+        const where = {
+            type: 'Member',
+            checkIn: { gte: from, lte: to }
+        };
+
+        if (role !== 'SUPER_ADMIN') {
+            where.tenantId = tenantId;
+        }
+
+        const records = await prisma.attendance.findMany({
+            where,
+            include: { member: { include: { plan: { select: { name: true } } } } },
+            orderBy: { checkIn: 'desc' },
+            take: 500
+        });
+
+        const formatted = records
+            .filter(r => {
+                if (!search) return true;
+                const m = r.member;
+                const q = search.toLowerCase();
+                return (m?.name || '').toLowerCase().includes(q) || (m?.memberId || '').toLowerCase().includes(q);
+            })
+            .map(r => {
+                const m = r.member || {};
+                const checkInTime = new Date(r.checkIn);
+                const checkOutTime = r.checkOut ? new Date(r.checkOut) : null;
+                let duration = '-';
+                if (checkInTime) {
+                    const endT = checkOutTime || new Date();
+                    const diffMins = Math.floor((endT - checkInTime) / 60000);
+                    const hours = Math.floor(diffMins / 60);
+                    const mins = diffMins % 60;
+                    duration = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
+                }
+                return {
+                    id: r.id,
+                    name: m.name || 'Unknown',
+                    code: m.memberId || 'N/A',
+                    plan: m.plan?.name || '-',
+                    date: checkInTime.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
+                    in: checkInTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                    out: checkOutTime ? checkOutTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '-',
+                    duration,
+                    status: r.checkOut ? 'Completed' : 'Inside'
+                };
+            });
+
+        res.json({ records: formatted, total: formatted.length });
+    } catch (error) {
+        console.error('[getAttendanceHistory] Error:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
 module.exports = {
     searchMembers,
     checkIn,
@@ -1003,5 +1069,6 @@ module.exports = {
     getAttendanceReport,
     getBookingReport,
     getTodaysCheckIns,
-    bulkCreateLockers
+    bulkCreateLockers,
+    getAttendanceHistory
 };

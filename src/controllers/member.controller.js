@@ -1207,6 +1207,97 @@ const getMemberDashboard = async (req, res) => {
     }
 };
 
+const memberCheckIn = async (req, res) => {
+    try {
+        const member = await prisma.member.findUnique({
+            where: { userId: req.user.id },
+            include: { plan: true }
+        });
+        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+
+        if (member.status === 'Expired') return res.status(403).json({ message: 'Membership expired. Please renew.' });
+        if (member.status !== 'Active') return res.status(403).json({ message: `Membership is currently ${member.status}` });
+
+        // Check if already checked in today
+        const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+        const todayEnd = new Date(); todayEnd.setHours(23, 59, 59, 999);
+
+        const existing = await prisma.attendance.findFirst({
+            where: { memberId: member.id, checkIn: { gte: todayStart, lte: todayEnd }, type: 'Member' }
+        });
+
+        if (existing && !existing.checkOut) {
+            return res.status(400).json({ message: 'Already checked in. Please check out first.' });
+        }
+        if (existing && existing.checkOut) {
+            return res.status(400).json({ message: 'Already checked in and out today.' });
+        }
+
+        const attendance = await prisma.attendance.create({
+            data: {
+                memberId: member.id,
+                userId: req.user.id,
+                type: 'Member',
+                checkIn: new Date(),
+                tenantId: member.tenantId,
+                status: 'Present'
+            }
+        });
+
+        res.json({ success: true, message: 'Check-in successful!', attendance });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const memberCheckOut = async (req, res) => {
+    try {
+        const member = await prisma.member.findUnique({ where: { userId: req.user.id } });
+        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+
+        const activeRecord = await prisma.attendance.findFirst({
+            where: { memberId: member.id, checkOut: null, type: 'Member' },
+            orderBy: { checkIn: 'desc' }
+        });
+
+        if (!activeRecord) return res.status(400).json({ message: 'No active check-in found.' });
+
+        const updated = await prisma.attendance.update({
+            where: { id: activeRecord.id },
+            data: { checkOut: new Date() }
+        });
+
+        res.json({ success: true, message: 'Checked out successfully!', attendance: updated });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const getMemberCheckInStatus = async (req, res) => {
+    try {
+        const member = await prisma.member.findUnique({ where: { userId: req.user.id } });
+        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+
+        const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+        const todayEnd = new Date(); todayEnd.setHours(23, 59, 59, 999);
+
+        const todayRecord = await prisma.attendance.findFirst({
+            where: { memberId: member.id, checkIn: { gte: todayStart, lte: todayEnd }, type: 'Member' },
+            orderBy: { checkIn: 'desc' }
+        });
+
+        res.json({
+            isCheckedIn: !!(todayRecord && !todayRecord.checkOut),
+            isCheckedOut: !!(todayRecord && todayRecord.checkOut),
+            checkInTime: todayRecord?.checkIn || null,
+            checkOutTime: todayRecord?.checkOut || null,
+            attendanceId: todayRecord?.id || null
+        });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
 module.exports = {
     upgradePlan,
     cancelMembership,
@@ -1237,5 +1328,8 @@ module.exports = {
     getMemberDashboard,
     updateMemberProfile,
     changePassword,
-    getMemberAttendance
+    getMemberAttendance,
+    memberCheckIn,
+    memberCheckOut,
+    getMemberCheckInStatus
 };

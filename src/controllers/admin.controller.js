@@ -1,6 +1,8 @@
 // gym_backend/src/controllers/admin.controller.js
 const prisma = require('../config/prisma');
 const cloudinary = require('../utils/cloudinary');
+const PDFDocument = require('pdfkit');
+const QRCode = require('qrcode');
 
 // --- MEMBER MANAGEMENT ---
 
@@ -110,7 +112,7 @@ const addMember = async (req, res) => {
     try {
         const { tenantId: userTenantId, email: userEmail, name: userName } = req.user;
         const {
-            name, email, phone, planId, avatar, benefits, branchId,
+            name, email, phone, planId, duration, avatar, benefits, branchId,
             gender, dob, source, referralCode, idType, idNumber, address,
             emergencyName, emergencyPhone, fitnessGoal, healthConditions, medicalHistory,
             startDate
@@ -188,6 +190,13 @@ const addMember = async (req, res) => {
                 }
             });
 
+            const joinDate = startDate ? new Date(startDate) : new Date();
+            let expiryDate = null;
+            if (planId && duration) {
+                expiryDate = new Date(joinDate);
+                expiryDate.setMonth(expiryDate.getMonth() + parseInt(duration));
+            }
+
             const newMember = await prisma.member.create({
                 data: {
                     memberId: uniqueMemberId,
@@ -210,7 +219,8 @@ const addMember = async (req, res) => {
                     emergencyPhone,
                     fitnessGoal,
                     medicalHistory: healthConditions || medicalHistory,
-                    joinDate: startDate ? new Date(startDate) : new Date(),
+                    joinDate: joinDate,
+                    expiryDate: expiryDate, // Auto set based on duration
                     benefits: Array.isArray(benefits) ? JSON.stringify(benefits) : (benefits || null)
                 }
             });
@@ -220,12 +230,13 @@ const addMember = async (req, res) => {
                     where: { id: parseInt(planId), tenantId: tId }
                 });
                 if (plan) {
+                    const invoiceAmount = parseFloat(plan.price) * (parseInt(duration) || 1);
                     await prisma.invoice.create({
                         data: {
                             tenantId: tId,
                             invoiceNumber: `INV-${Date.now()}-${tId}`,
                             memberId: newMember.id,
-                            amount: plan.price,
+                            amount: invoiceAmount,
                             paymentMode: 'Cash',
                             status: 'Unpaid',
                             dueDate: new Date()
@@ -351,6 +362,18 @@ const updateMember = async (req, res) => {
 const deleteMember = async (req, res) => {
     try {
         const { id } = req.params;
+        const { role, tenantId, email, name: userName } = req.user;
+
+        const member = await prisma.member.findUnique({ where: { id: parseInt(id) } });
+        if (!member) return res.status(404).json({ message: 'Member not found' });
+
+        if (role !== 'SUPER_ADMIN' && member.tenantId !== tenantId) {
+            const isOwner = await prisma.tenant.findFirst({
+                where: { id: member.tenantId, OR: [{ owner: email }, { owner: userName }] }
+            });
+            if (!isOwner) return res.status(403).json({ message: 'Not authorized to delete this member' });
+        }
+
         await prisma.member.delete({ where: { id: parseInt(id) } });
         res.json({ message: 'Member deleted successfully' });
     } catch (error) {
@@ -1104,6 +1127,18 @@ const getCheckIns = async (req, res) => {
 const deleteCheckIn = async (req, res) => {
     try {
         const { id } = req.params;
+        const { role, tenantId, email, name: userName } = req.user;
+
+        const attendance = await prisma.attendance.findUnique({ where: { id: parseInt(id) } });
+        if (!attendance) return res.status(404).json({ message: 'Attendance record not found' });
+
+        if (role !== 'SUPER_ADMIN' && attendance.tenantId !== tenantId) {
+            const isOwner = await prisma.tenant.findFirst({
+                where: { id: attendance.tenantId, OR: [{ owner: email }, { owner: userName }] }
+            });
+            if (!isOwner) return res.status(403).json({ message: 'Not authorized to delete this attendance record' });
+        }
+
         await prisma.attendance.delete({ where: { id: parseInt(id) } });
         res.json({ message: 'Attendance record deleted' });
     } catch (error) {
@@ -1432,6 +1467,18 @@ const getTaskById = async (req, res) => {
 const deleteTask = async (req, res) => {
     try {
         const { id } = req.params;
+        const { role, tenantId, email, name: userName } = req.user;
+
+        const task = await prisma.task.findUnique({ where: { id: parseInt(id) } });
+        if (!task) return res.status(404).json({ message: 'Task not found' });
+
+        if (role !== 'SUPER_ADMIN' && task.tenantId !== tenantId) {
+            const isOwner = await prisma.tenant.findFirst({
+                where: { id: task.tenantId, OR: [{ owner: email }, { owner: userName }] }
+            });
+            if (!isOwner) return res.status(403).json({ message: 'Not authorized to delete this task' });
+        }
+
         await prisma.task.delete({ where: { id: parseInt(id) } });
         res.json({ message: 'Task deleted successfully' });
     } catch (error) {
@@ -1758,6 +1805,18 @@ const updatePlan = async (req, res) => {
 const deletePlan = async (req, res) => {
     try {
         const { id } = req.params;
+        const { role, tenantId, email, name: userName } = req.user;
+
+        const plan = await prisma.membershipPlan.findUnique({ where: { id: parseInt(id) } });
+        if (!plan) return res.status(404).json({ message: 'Plan not found' });
+
+        if (role !== 'SUPER_ADMIN' && plan.tenantId !== tenantId) {
+            const isOwner = await prisma.tenant.findFirst({
+                where: { id: plan.tenantId, OR: [{ owner: email }, { owner: userName }] }
+            });
+            if (!isOwner) return res.status(403).json({ message: 'Not authorized to delete this plan' });
+        }
+
         await prisma.membershipPlan.delete({
             where: { id: parseInt(id) }
         });
@@ -2030,6 +2089,17 @@ const deleteClass = async (req, res) => {
     try {
         const { id } = req.params;
         const classId = parseInt(id);
+        const { role, tenantId, email, name: userName } = req.user;
+
+        const cls = await prisma.class.findUnique({ where: { id: classId } });
+        if (!cls) return res.status(404).json({ message: 'Class not found' });
+
+        if (role !== 'SUPER_ADMIN' && cls.tenantId !== tenantId) {
+            const isOwner = await prisma.tenant.findFirst({
+                where: { id: cls.tenantId, OR: [{ owner: email }, { owner: userName }] }
+            });
+            if (!isOwner) return res.status(403).json({ message: 'Not authorized to delete this class' });
+        }
 
         // Delete associated bookings first, then the class
         await prisma.$transaction([
@@ -2936,6 +3006,88 @@ const updateServiceRequestStatus = async (req, res) => {
     }
 };
 
+const downloadAttendanceQrCode = async (req, res) => {
+    try {
+        const tenantId = req.user.tenantId;
+        const tenant = await prisma.tenant.findUnique({
+            where: { id: tenantId }
+        });
+
+        if (!tenant) {
+            return res.status(404).json({ message: 'Tenant not found' });
+        }
+
+        // Generate QR Code data
+        // Format: https://mygymsoftware.com/scan?branchId=1&token=GYM_1_SECURE
+        const qrData = `https://mygymsoftware.com/scan?branchId=${tenantId}&token=GYM_${tenantId}_SECURE`;
+
+        const qrCodeBuffer = await QRCode.toBuffer(qrData, {
+            errorCorrectionLevel: 'H',
+            margin: 1,
+            width: 800
+        });
+
+        const doc = new PDFDocument({
+            size: 'A4',
+            margin: 50
+        });
+
+        // Filename
+        const filename = `Attendance_QR_${tenant.name.replace(/\s+/g, '_')}.pdf`;
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+
+        doc.pipe(res);
+
+        // -- PDF Design --
+        const pageWidth = doc.page.width;
+
+        // Header
+        doc.fillColor('#581Ceb')
+            .fontSize(32)
+            .font('Helvetica-Bold')
+            .text('GYM ATTENDANCE QR', 0, 100, { align: 'center', width: pageWidth });
+
+        doc.moveDown(0.5);
+        doc.fillColor('#64748b')
+            .fontSize(20)
+            .font('Helvetica')
+            .text(tenant.name || 'Your Gym Name', { align: 'center', width: pageWidth });
+
+        // QR Code
+        const qrSize = 320;
+        const qrX = (pageWidth - qrSize) / 2;
+        doc.image(qrCodeBuffer, qrX, 240, { width: qrSize });
+
+        // Instructions
+        doc.fillColor('#1e293b')
+            .fontSize(22)
+            .font('Helvetica-Bold')
+            .text('Scan this QR Code to mark your attendance.', 0, 600, { align: 'center', width: pageWidth });
+
+        doc.moveDown(1);
+        doc.fillColor('#64748b')
+            .fontSize(16)
+            .font('Helvetica')
+            .text('Open your Gym Dashboard and click "Scan QR" to Check-In or Check-Out.', {
+                align: 'center',
+                width: pageWidth,
+                lineGap: 5
+            });
+
+        // Footer
+        doc.fontSize(10)
+            .fillColor('#94a3b8')
+            .text('© Gym Academy Management System', 0, doc.page.height - 60, { align: 'center', width: pageWidth });
+
+        doc.end();
+
+    } catch (error) {
+        console.error('QR PDF Error:', error);
+        res.status(500).json({ message: 'Failed to generate QR PDF' });
+    }
+};
+
 module.exports = {
     getAllServiceRequests,
     updateServiceRequestStatus,
@@ -3003,5 +3155,6 @@ module.exports = {
     getTenantSettings,
     updateTenantSettings,
     getTrainerStats,
-    getSystemHealth
+    getSystemHealth,
+    downloadAttendanceQrCode
 };
