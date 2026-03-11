@@ -1099,8 +1099,8 @@ const getCheckIns = async (req, res) => {
         const formatted = attendance.map(a => {
             const name = a.member?.name || a.user?.name || 'N/A';
             const roleName = a.type === 'Member' ? 'Member' : (a.user?.role || a.type);
-            const checkInTime = a.checkIn ? new Date(a.checkIn).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : '-';
-            const checkOutTime = a.checkOut ? new Date(a.checkOut).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : '-';
+            const checkInTime = a.checkIn ? new Date(a.checkIn).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' }) : '-';
+            const checkOutTime = a.checkOut ? new Date(a.checkOut).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' }) : '-';
 
             return {
                 id: a.id,
