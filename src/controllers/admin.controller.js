@@ -190,11 +190,32 @@ const addMember = async (req, res) => {
                 }
             });
 
+            let planObj = null;
+            if (planId) {
+                planObj = await prisma.membershipPlan.findFirst({
+                    where: { id: parseInt(planId), tenantId: tId }
+                });
+            }
+
             const joinDate = startDate ? new Date(startDate) : new Date();
             let expiryDate = null;
-            if (planId && duration) {
+            let finalPrice = 0;
+            const cycleMultiplier = parseInt(duration) || 1;
+
+            if (planObj) {
                 expiryDate = new Date(joinDate);
-                expiryDate.setMonth(expiryDate.getMonth() + parseInt(duration));
+                const totalDurationParam = planObj.duration * cycleMultiplier;
+
+                if (planObj.durationType === 'Days') {
+                    expiryDate.setDate(expiryDate.getDate() + totalDurationParam);
+                } else if (planObj.durationType === 'Weeks') {
+                    expiryDate.setDate(expiryDate.getDate() + (totalDurationParam * 7));
+                } else if (planObj.durationType === 'Years') {
+                    expiryDate.setFullYear(expiryDate.getFullYear() + totalDurationParam);
+                } else {
+                    expiryDate.setMonth(expiryDate.getMonth() + totalDurationParam);
+                }
+                finalPrice = parseFloat(planObj.price) * cycleMultiplier;
             }
 
             const newMember = await prisma.member.create({
@@ -220,29 +241,23 @@ const addMember = async (req, res) => {
                     fitnessGoal,
                     medicalHistory: healthConditions || medicalHistory,
                     joinDate: joinDate,
-                    expiryDate: expiryDate, // Auto set based on duration
+                    expiryDate: expiryDate, // Auto set based on plan duration
                     benefits: Array.isArray(benefits) ? JSON.stringify(benefits) : (benefits || null)
                 }
             });
 
-            if (planId) {
-                const plan = await prisma.membershipPlan.findFirst({
-                    where: { id: parseInt(planId), tenantId: tId }
+            if (planObj) {
+                await prisma.invoice.create({
+                    data: {
+                        tenantId: tId,
+                        invoiceNumber: `INV-${Date.now()}-${tId}`,
+                        memberId: newMember.id,
+                        amount: finalPrice,
+                        paymentMode: 'Cash',
+                        status: 'Unpaid',
+                        dueDate: new Date()
+                    }
                 });
-                if (plan) {
-                    const invoiceAmount = parseFloat(plan.price) * (parseInt(duration) || 1);
-                    await prisma.invoice.create({
-                        data: {
-                            tenantId: tId,
-                            invoiceNumber: `INV-${Date.now()}-${tId}`,
-                            memberId: newMember.id,
-                            amount: invoiceAmount,
-                            paymentMode: 'Cash',
-                            status: 'Unpaid',
-                            dueDate: new Date()
-                        }
-                    });
-                }
             }
 
             // --- NOTIFICATION ---
@@ -267,6 +282,25 @@ const addMember = async (req, res) => {
                 });
             }
             createdMembers.push(newMember);
+
+            // --- LINK REFERRAL LEAD ---
+            // Update any existing referral lead for this person to 'Converted'
+            try {
+                await prisma.lead.updateMany({
+                    where: {
+                        tenantId: tId,
+                        OR: [
+                            { email: memberEmailForUser },
+                            { phone: phone }
+                        ],
+                        source: 'Referral',
+                        status: { not: 'Converted' }
+                    },
+                    data: { status: 'Converted' }
+                });
+            } catch (leadError) {
+                console.error('Failed to update referral lead status during manual member addition:', leadError);
+            }
         }
 
         if (createdMembers.length === 0 && targetBranchIds.length > 0) {
@@ -2614,9 +2648,22 @@ const renewMembership = async (req, res) => {
 
         if (!plan) return res.status(404).json({ message: 'Plan not found' });
 
+        const cycleMultiplier = parseInt(duration) || 1;
+        const totalDurationParam = plan.duration * cycleMultiplier;
         const today = new Date();
         const expiryDate = new Date(today);
-        expiryDate.setMonth(expiryDate.getMonth() + parseInt(duration));
+
+        if (plan.durationType === 'Days') {
+            expiryDate.setDate(expiryDate.getDate() + totalDurationParam);
+        } else if (plan.durationType === 'Weeks') {
+            expiryDate.setDate(expiryDate.getDate() + (totalDurationParam * 7));
+        } else if (plan.durationType === 'Years') {
+            expiryDate.setFullYear(expiryDate.getFullYear() + totalDurationParam);
+        } else {
+            expiryDate.setMonth(expiryDate.getMonth() + totalDurationParam);
+        }
+
+        const finalPrice = parseFloat(plan.price) * cycleMultiplier;
 
         const updatedMember = await prisma.member.update({
             where: { id: parseInt(memberId) },
@@ -2633,7 +2680,7 @@ const renewMembership = async (req, res) => {
                 tenantId,
                 invoiceNumber: `REN-${Date.now()}`,
                 memberId: parseInt(memberId),
-                amount: parseFloat(plan.price) * parseInt(duration),
+                amount: finalPrice,
                 paymentMode: 'Cash',
                 status: 'Unpaid',
                 dueDate: new Date()
@@ -2992,6 +3039,14 @@ const updateServiceRequestStatus = async (req, res) => {
         const { id } = req.params;
         const { status } = req.body;
 
+        const requestRecord = await prisma.serviceRequest.findUnique({
+            where: { id: parseInt(id) }
+        });
+
+        if (!requestRecord) {
+            return res.status(404).json({ message: 'Service request not found' });
+        }
+
         const updated = await prisma.serviceRequest.update({
             where: { id: parseInt(id) },
             data: {
@@ -2999,6 +3054,55 @@ const updateServiceRequestStatus = async (req, res) => {
                 updatedAt: new Date()
             }
         });
+
+        // Automatically freeze or unfreeze if request is accepted/approved
+        if (status === 'Accepted' || status === 'Approved') {
+            if (requestRecord.type === 'Freeze Membership') {
+                const memberRecord = await prisma.member.findUnique({
+                    where: { id: requestRecord.memberId }
+                });
+
+                if (memberRecord) {
+                    // Determine freeze duration if specified in details or rawType, default to 1 month
+                    let freezeMonths = 1;
+                    const match = requestRecord.details?.match(/(\d+)\s*month/i);
+                    if (match && match[1]) {
+                        freezeMonths = parseInt(match[1]);
+                    }
+
+                    const currentExpiry = memberRecord.expiryDate || new Date();
+                    const newExpiry = new Date(currentExpiry);
+                    newExpiry.setMonth(newExpiry.getMonth() + freezeMonths);
+
+                    await prisma.member.update({
+                        where: { id: requestRecord.memberId },
+                        data: {
+                            status: 'Frozen',
+                            expiryDate: newExpiry,
+                            medicalHistory: memberRecord.medicalHistory
+                                ? `${memberRecord.medicalHistory}\n[Auto Freeze: Approved Service Request - ${freezeMonths} month(s)]`
+                                : `[Auto Freeze: Approved Service Request - ${freezeMonths} month(s)]`
+                        }
+                    });
+                }
+            } else if (requestRecord.type === 'Unfreeze Membership') {
+                const memberRecord = await prisma.member.findUnique({
+                    where: { id: requestRecord.memberId }
+                });
+
+                if (memberRecord) {
+                    await prisma.member.update({
+                        where: { id: requestRecord.memberId },
+                        data: {
+                            status: 'Active',
+                            medicalHistory: memberRecord.medicalHistory
+                                ? `${memberRecord.medicalHistory}\n[Auto Unfreeze: Approved Service Request]`
+                                : `[Auto Unfreeze: Approved Service Request]`
+                        }
+                    });
+                }
+            }
+        }
 
         res.json(updated);
     } catch (error) {

@@ -54,7 +54,7 @@ exports.getAllReferrals = async (req, res) => {
                     }
                 } catch (e) { }
             }
-            return {
+            const item = {
                 id: lead.id,
                 referredName: lead.name,
                 phone: lead.phone,
@@ -62,10 +62,36 @@ exports.getAllReferrals = async (req, res) => {
                 referrerId,
                 referrerName,
                 status: lead.status === 'Converted' ? 'Converted' : (lead.status === 'New' ? 'Pending' : lead.status),
-                rewardStatus,
+                rewardStatus: 'Pending', // Default
                 branchName: lead.tenant?.name || 'Main Branch',
                 createdAt: lead.createdAt
             };
+
+            // Dynamic Reward Status Check
+            if (item.status === 'Converted') {
+                // Find member by email or phone
+                const member = await prisma.member.findFirst({
+                    where: {
+                        tenantId: lead.tenantId,
+                        OR: [
+                            { email: lead.email || undefined },
+                            { phone: lead.phone || undefined }
+                        ].filter(c => c.email !== undefined || c.phone !== undefined)
+                    },
+                    include: {
+                        invoices: {
+                            where: { status: 'Paid' },
+                            take: 1
+                        }
+                    }
+                });
+
+                if (member && member.invoices.length > 0) {
+                    item.rewardStatus = 'Paid';
+                }
+            }
+
+            return item;
         }));
 
         res.json(formatted);

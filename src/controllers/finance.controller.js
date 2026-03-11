@@ -170,10 +170,10 @@ const getInvoices = async (req, res) => {
         const combinedClients = new Set([...uniqueInvoicingClients, ...uniqueStoreClients]).size;
 
         const totalPaidInvoices = allInvoices.filter(i => i.status === 'Paid').reduce((acc, i) => acc + Number(i.amount), 0);
-        const totalPaidStore = allStoreOrders.filter(o => o.status === 'Paid' || o.status === 'Processing').reduce((acc, o) => acc + Number(o.total), 0);
+        const totalPaidStore = allStoreOrders.filter(o => o.status === 'Paid' || o.status === 'Processing' || o.status === 'Completed').reduce((acc, o) => acc + Number(o.total), 0);
 
         const totalUnpaidInvoices = allInvoices.filter(i => i.status !== 'Paid').reduce((acc, i) => acc + Number(i.amount), 0);
-        const totalUnpaidStore = allStoreOrders.filter(o => o.status !== 'Paid' && o.status !== 'Processing').reduce((acc, o) => acc + Number(o.total), 0);
+        const totalUnpaidStore = allStoreOrders.filter(o => o.status !== 'Paid' && o.status !== 'Processing' && o.status !== 'Completed').reduce((acc, o) => acc + Number(o.total), 0);
 
         res.status(200).json({
             invoices: combinedInvoices,
@@ -463,7 +463,7 @@ const getTransactions = async (req, res) => {
             method: o.paymentMode || 'POS',
             amount: Number(o.total),
             date: o.date,
-            status: o.status,
+            status: o.status === 'Completed' || o.status === 'Processing' ? 'Paid' : (o.status === 'Paid' ? 'Paid' : 'Unpaid'),
             branch: o.tenant?.name || 'Main Branch',
             flow: 'in'
         }));
