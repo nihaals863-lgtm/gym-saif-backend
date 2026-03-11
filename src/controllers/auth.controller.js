@@ -33,7 +33,8 @@ const login = async (req, res) => {
             email: user.email,
             role: user.role,
             tenantId: user.tenantId,
-            branchName: user.tenant?.branchName
+            branchName: user.tenant?.branchName,
+            token
         });
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -122,6 +123,7 @@ const getMe = async (req, res) => {
                 month: 'short',
                 year: 'numeric'
             }),
+            token: req.cookies.token || (req.headers.authorization ? req.headers.authorization.split(' ')[1] : undefined),
             ...memberData
         });
     } catch (error) {

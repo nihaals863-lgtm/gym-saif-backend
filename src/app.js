@@ -82,6 +82,9 @@ app.use('/api/v1/branches', branchesRoutes);
 const notificationRoutes = require('./routes/notification.routes');
 app.use('/api/v1/notifications', notificationRoutes);
 
+const attendanceRoutes = require('./routes/attendance.routes');
+app.use('/api/v1/attendance', attendanceRoutes);
+
 // Base Route
 app.get('/', (req, res) => {
     res.json({ message: 'Gym CRM API is running' });

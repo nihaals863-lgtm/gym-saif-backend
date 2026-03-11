@@ -3017,9 +3017,9 @@ const downloadAttendanceQrCode = async (req, res) => {
             return res.status(404).json({ message: 'Tenant not found' });
         }
 
-        // Generate QR Code data
-        // Format: https://mygymsoftware.com/scan?branchId=1&token=GYM_1_SECURE
-        const qrData = `https://mygymsoftware.com/scan?branchId=${tenantId}&token=GYM_${tenantId}_SECURE`;
+        // Generate QR Code data using dynamic frontend origin
+        const frontendUrl = req.headers.origin || 'http://localhost:5173';
+        const qrData = `${frontendUrl}/scan?branchId=${tenantId}&token=GYM_${tenantId}_SECURE`;
 
         const qrCodeBuffer = await QRCode.toBuffer(qrData, {
             errorCorrectionLevel: 'H',
