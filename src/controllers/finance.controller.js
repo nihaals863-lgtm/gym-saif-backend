@@ -44,7 +44,7 @@ const getExpenses = async (req, res) => {
 const createExpense = async (req, res) => {
     try {
         const { title, category, amount, date, notes, status, branchId } = req.body;
-        const tenantId = req.user.tenantId;
+        const { tenantId, role } = req.user;
 
         let targetTenantId = tenantId;
         if ((role === 'SUPER_ADMIN' || role === 'BRANCH_ADMIN') && branchId && branchId !== 'all') {
