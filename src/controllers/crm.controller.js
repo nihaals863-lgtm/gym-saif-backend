@@ -2,6 +2,35 @@ const prisma = require('../config/prisma');
 
 // --- LEADS ---
 
+// Check for duplicate lead by phone or email
+const checkDuplicateLead = async (req, res) => {
+    try {
+        const { phone, email, branchId } = req.body;
+        const { tenantId: userTenantId, role } = req.user;
+
+        const targetTenantId = (branchId && branchId !== 'all') ? parseInt(branchId) : userTenantId;
+
+        const conditions = [];
+        if (phone) conditions.push({ phone, tenantId: targetTenantId });
+        if (email) conditions.push({ email, tenantId: targetTenantId });
+
+        if (conditions.length === 0) return res.json({ isDuplicate: false });
+
+        const existingLead = await prisma.lead.findFirst({
+            where: { OR: conditions },
+            select: { id: true, name: true, phone: true, email: true, status: true }
+        });
+
+        res.json({
+            isDuplicate: !!existingLead,
+            existingLead: existingLead || null
+        });
+    } catch (error) {
+        console.error('Check Duplicate Error:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
 const createLead = async (req, res) => {
     try {
         const { tenantId: userTenantId, role, email, name: userName } = req.user;
@@ -30,6 +59,23 @@ const createLead = async (req, res) => {
 
         if (!targetTenantId) {
             return res.status(403).json({ message: 'Unauthorized: No branch context found.' });
+        }
+
+        // --- DUPLICATE CHECK ---
+        const dupeConditions = [];
+        if (phone) dupeConditions.push({ phone, tenantId: targetTenantId });
+        if (leadEmail) dupeConditions.push({ email: leadEmail, tenantId: targetTenantId });
+
+        if (dupeConditions.length > 0) {
+            const existingLead = await prisma.lead.findFirst({
+                where: { OR: dupeConditions }
+            });
+            if (existingLead) {
+                return res.status(409).json({
+                    message: `A lead with this ${existingLead.phone === phone ? 'phone number' : 'email'} already exists: ${existingLead.name} (${existingLead.status})`,
+                    existingLead: { id: existingLead.id, name: existingLead.name, status: existingLead.status }
+                });
+            }
         }
 
         // Combine date and time to nextFollowUp
@@ -94,7 +140,7 @@ const createLead = async (req, res) => {
 
 const getLeads = async (req, res) => {
     try {
-        const { tenantId: userTenantId, role, email, name: userName } = req.user;
+        const { tenantId: userTenantId, role, email, name: userName, id: userId } = req.user;
         const { search, status, assignedTo, branchId: queryBranchId } = req.query;
         const headerTenantId = req.headers['x-tenant-id'];
 
@@ -132,9 +178,9 @@ const getLeads = async (req, res) => {
         // Status Filter
         if (status && status !== 'All') where.status = status;
 
-        // Strict: Trainers only see their assigned leads
-        if (role === 'TRAINER') {
-            where.assignedToId = req.user.id;
+        // STAFF and TRAINER only see their assigned leads
+        if (role === 'TRAINER' || role === 'STAFF') {
+            where.assignedToId = userId;
         } else if (assignedTo) {
             where.assignedToId = parseInt(assignedTo);
         }
@@ -188,11 +234,21 @@ const getLeadById = async (req, res) => {
 const updateLeadStatus = async (req, res) => {
     try {
         const { id } = req.params;
-        const { status } = req.body;
+        const { status, lostReason, planId, trainerId, paymentMethod, referralCode } = req.body;
 
         const lead = await prisma.lead.findUnique({ where: { id: parseInt(id) } });
         if (!lead) return res.status(404).json({ message: 'Lead not found' });
 
+        // --- LOST ---
+        if (status === 'Lost') {
+            const updatedLead = await prisma.lead.update({
+                where: { id: parseInt(id) },
+                data: { status: 'Lost', lostReason: lostReason || null }
+            });
+            return res.json(updatedLead);
+        }
+
+        // --- CONVERTED ---
         if (status === 'Converted' && lead.status !== 'Converted') {
             const bcrypt = require('bcryptjs');
             const hashedPassword = await bcrypt.hash('123456', 10);
@@ -217,8 +273,23 @@ const updateLeadStatus = async (req, res) => {
                 }
             });
 
+            // Determine plan and expiry
+            let selectedPlan = null;
+            let expiryDate = null;
+            if (planId) {
+                selectedPlan = await prisma.membershipPlan.findUnique({ where: { id: parseInt(planId) } });
+                if (selectedPlan) {
+                    expiryDate = new Date();
+                    if (selectedPlan.durationType === 'Days') {
+                        expiryDate.setDate(expiryDate.getDate() + selectedPlan.duration);
+                    } else {
+                        expiryDate.setMonth(expiryDate.getMonth() + selectedPlan.duration);
+                    }
+                }
+            }
+
             // Create Member profile
-            await prisma.member.create({
+            const newMember = await prisma.member.create({
                 data: {
                     userId: newUser.id,
                     tenantId: lead.tenantId,
@@ -228,20 +299,60 @@ const updateLeadStatus = async (req, res) => {
                     phone: lead.phone,
                     status: 'Active',
                     joinDate: new Date(),
+                    expiryDate: expiryDate,
                     gender: lead.gender || 'Other',
                     source: lead.source || 'Walk-in',
-                    benefits: '[]' // Fixed: benefits must be a string in schema
+                    planId: selectedPlan ? selectedPlan.id : null,
+                    trainerId: trainerId ? parseInt(trainerId) : null,
+                    referralCode: referralCode || null,
+                    benefits: '[]'
                 }
             });
+
+            // Create Invoice if plan is selected
+            if (selectedPlan) {
+                const invoiceNumber = `INV-LEAD-${Date.now()}`;
+                await prisma.invoice.create({
+                    data: {
+                        tenantId: lead.tenantId,
+                        invoiceNumber,
+                        memberId: newMember.id,
+                        subtotal: selectedPlan.price,
+                        taxRate: 0,
+                        taxAmount: 0,
+                        discount: 0,
+                        amount: selectedPlan.price,
+                        status: paymentMethod ? 'Paid' : 'Unpaid',
+                        paymentMode: paymentMethod || 'Cash',
+                        dueDate: new Date(),
+                        paidDate: paymentMethod ? new Date() : null,
+                        items: {
+                            create: {
+                                description: `Membership Plan: ${selectedPlan.name}`,
+                                quantity: 1,
+                                rate: selectedPlan.price,
+                                amount: selectedPlan.price
+                            }
+                        }
+                    }
+                });
+            }
+        }
+
+        const updatedData = { status };
+        if (referralCode) {
+            updatedData.source = 'Referral';
+            updatedData.notes = JSON.stringify({ referrerId: referralCode });
         }
 
         const updatedLead = await prisma.lead.update({
             where: { id: parseInt(id) },
-            data: { status }
+            data: updatedData
         });
 
         res.json(updatedLead);
     } catch (error) {
+        console.error('Update Lead Status Error:', error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -249,7 +360,16 @@ const updateLeadStatus = async (req, res) => {
 const updateLead = async (req, res) => {
     try {
         const { id } = req.params;
-        const { name, email, phone, source, notes, age, gender, budgetRange } = req.body;
+        const { name, email, phone, source, notes, age, gender, budgetRange, assignedTo, followUpDate, followUpTime } = req.body;
+
+        let nextFollowUp = undefined;
+        if (followUpDate) {
+            nextFollowUp = new Date(followUpDate);
+            if (followUpTime) {
+                const [hours, minutes] = followUpTime.split(':');
+                nextFollowUp.setHours(hours, minutes);
+            }
+        }
 
         const updatedLead = await prisma.lead.update({
             where: { id: parseInt(id) },
@@ -261,7 +381,9 @@ const updateLead = async (req, res) => {
                 notes,
                 age: age ? parseInt(age) : undefined,
                 gender,
-                budget: budgetRange
+                budget: budgetRange,
+                assignedToId: assignedTo ? parseInt(assignedTo) : undefined,
+                nextFollowUp
             }
         });
 
@@ -294,7 +416,7 @@ const deleteLead = async (req, res) => {
 
 const getTodayFollowUps = async (req, res) => {
     try {
-        const { tenantId, role } = req.user;
+        const { tenantId, role, id: userId } = req.user;
 
         if (!tenantId && role !== 'SUPER_ADMIN') {
             return res.json([]);
@@ -313,6 +435,11 @@ const getTodayFollowUps = async (req, res) => {
 
         if (role !== 'SUPER_ADMIN') {
             where.tenantId = tenantId;
+        }
+
+        // STAFF and TRAINER only see their assigned follow-ups
+        if (role === 'STAFF' || role === 'TRAINER') {
+            where.assignedToId = userId;
         }
 
         const leads = await prisma.lead.findMany({
@@ -367,5 +494,6 @@ module.exports = {
     deleteLead,
     getTodayFollowUps,
     addFollowUp,
-    getLeadById
+    getLeadById,
+    checkDuplicateLead
 };

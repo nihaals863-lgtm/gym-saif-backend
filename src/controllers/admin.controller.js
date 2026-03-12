@@ -283,23 +283,45 @@ const addMember = async (req, res) => {
             }
             createdMembers.push(newMember);
 
-            // --- LINK REFERRAL LEAD ---
-            // Update any existing referral lead for this person to 'Converted'
-            try {
-                await prisma.lead.updateMany({
-                    where: {
-                        tenantId: tId,
-                        OR: [
-                            { email: memberEmailForUser },
-                            { phone: phone }
-                        ],
-                        source: 'Referral',
-                        status: { not: 'Converted' }
-                    },
-                    data: { status: 'Converted' }
-                });
-            } catch (leadError) {
-                console.error('Failed to update referral lead status during manual member addition:', leadError);
+            // --- LINK OR CREATE REFERRAL LEAD ---
+            if (referralCode) {
+                try {
+                    const existingLead = await prisma.lead.findFirst({
+                        where: {
+                            tenantId: tId,
+                            OR: [
+                                { email: memberEmailForUser },
+                                { phone: phone }
+                            ],
+                            source: 'Referral'
+                        }
+                    });
+
+                    if (existingLead) {
+                        await prisma.lead.update({
+                            where: { id: existingLead.id },
+                            data: { 
+                                status: 'Converted',
+                                notes: JSON.stringify({ referrerId: referralCode })
+                            }
+                        });
+                    } else {
+                        // Create a "ghost" referral lead so it shows up in Rewards tab
+                        await prisma.lead.create({
+                            data: {
+                                tenantId: tId,
+                                name: name,
+                                email: memberEmailForUser,
+                                phone: phone,
+                                source: 'Referral',
+                                status: 'Converted',
+                                notes: JSON.stringify({ referrerId: referralCode })
+                            }
+                        });
+                    }
+                } catch (referralError) {
+                    console.error('Failed to sync referral during manual member addition:', referralError);
+                }
             }
         }
 

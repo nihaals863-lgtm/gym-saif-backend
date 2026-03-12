@@ -324,6 +324,8 @@ model Lead {
   phone            String
   source           String?
   status           String     @default("New")
+  rewardStatus     String     @default("Pending")
+  lostReason       String?
   createdAt        DateTime   @default(now())
   age              Int?
   assignedToId     Int?

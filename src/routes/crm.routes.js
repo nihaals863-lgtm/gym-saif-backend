@@ -7,7 +7,8 @@ const {
     deleteLead,
     getTodayFollowUps,
     addFollowUp,
-    getLeadById
+    getLeadById,
+    checkDuplicateLead
 } = require('../controllers/crm.controller');
 const { protect, authorize } = require('../middleware/auth.middleware');
 
@@ -17,6 +18,7 @@ router.use(protect);
 // Allow all roles except MEMBER to access CRM (or customize as needed)
 router.use(authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER', 'STAFF', 'TRAINER'));
 
+router.post('/leads/check-duplicate', checkDuplicateLead);
 router.post('/leads', createLead);
 router.get('/leads', getLeads);
 router.get('/leads/:id', getLeadById);

@@ -1038,19 +1038,24 @@ const getMyReferrals = async (req, res) => {
 
         const myReferrals = [];
         let totalRewardsEarned = 0;
+        let pendingRewards = 0;
         let successfulSignups = 0;
 
         for (const lead of rawLeads) {
             if (lead.notes) {
-                // Only attempt to parse if it looks like a JSON object
                 if (lead.notes.trim().startsWith('{')) {
                     try {
                         const notesData = JSON.parse(lead.notes);
                         if (notesData.referrerId === member.memberId) {
                             const isConverted = lead.status === 'Converted';
                             if (isConverted) successfulSignups++;
-                            // Dummy reward calculation logic for now: 100 per conversion
-                            if (isConverted) totalRewardsEarned += 100;
+                            
+                            // 500 per confirmed conversion
+                            if (lead.rewardStatus === 'Claimed' || lead.rewardStatus === 'Paid') {
+                                totalRewardsEarned += 500;
+                            } else if (lead.rewardStatus === 'Eligible') {
+                                pendingRewards += 500;
+                            }
 
                             myReferrals.push({
                                 id: lead.id,
@@ -1058,7 +1063,8 @@ const getMyReferrals = async (req, res) => {
                                 phone: lead.phone,
                                 email: lead.email,
                                 status: isConverted ? 'Converted' : (lead.status === 'New' ? 'Pending' : lead.status),
-                                rewardStatus: isConverted ? 'Claimed' : 'Pending',
+                                rewardStatus: lead.rewardStatus || 'Pending',
+                                rewardAmount: 500,
                                 createdAt: lead.createdAt
                             });
                         }
@@ -1075,7 +1081,8 @@ const getMyReferrals = async (req, res) => {
             stats: {
                 referralsSent: myReferrals.length,
                 successfulSignups,
-                rewardsEarned: totalRewardsEarned
+                rewardsEarned: totalRewardsEarned,
+                pendingRewards
             }
         });
     } catch (error) {

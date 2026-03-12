@@ -196,7 +196,7 @@ const updateGym = async (req, res) => {
     try {
         const { id } = req.params;
         const { gymName, branchName, ownerName, email, phone, address, status, owner, location, planId } = req.body;
-        
+
         const data = {};
         if (gymName !== undefined) data.name = gymName;
         if (branchName !== undefined) data.branchName = branchName;
