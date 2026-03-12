@@ -53,6 +53,11 @@ const getAllGyms = async (req, res) => {
                 include: {
                     _count: {
                         select: { users: { where: { role: 'MEMBER' } } }
+                    },
+                    subscriptions: {
+                        where: { status: 'Active' },
+                        include: { plan: true },
+                        take: 1
                     }
                 }
             }),
@@ -70,6 +75,8 @@ const getAllGyms = async (req, res) => {
             location: g.location,
             status: g.status,
             members: g._count.users,
+            planId: g.subscriptions[0]?.planId,
+            planName: g.subscriptions[0]?.plan?.name || 'No Plan',
             createdAt: g.createdAt
         }));
 
@@ -188,10 +195,59 @@ const addGym = async (req, res) => {
 const updateGym = async (req, res) => {
     try {
         const { id } = req.params;
+        const { gymName, branchName, ownerName, email, phone, address, status, owner, location, planId } = req.body;
+        
+        const data = {};
+        if (gymName !== undefined) data.name = gymName;
+        if (branchName !== undefined) data.branchName = branchName;
+        if (owner !== undefined) data.owner = owner;
+        if (ownerName !== undefined) data.managerName = ownerName;
+        if (email !== undefined) data.managerEmail = email;
+        if (phone !== undefined) data.phone = phone;
+        if (location !== undefined) data.location = location;
+        if (address !== undefined && location === undefined) data.location = address;
+        if (status !== undefined) data.status = status;
+
         const updatedGym = await prisma.tenant.update({
             where: { id: parseInt(id) },
-            data: req.body
+            data
         });
+
+        if (planId) {
+            const existingSub = await prisma.subscription.findFirst({
+                where: { tenantId: parseInt(id), status: 'Active' }
+            });
+
+            if (existingSub) {
+                await prisma.subscription.update({
+                    where: { id: existingSub.id },
+                    data: { planId: parseInt(planId) }
+                });
+            } else {
+                const plan = await prisma.saaSPlan.findUnique({ where: { id: parseInt(planId) } });
+                if (plan) {
+                    const startDate = new Date();
+                    const endDate = new Date();
+                    if (plan.period === 'Monthly') {
+                        endDate.setMonth(endDate.getMonth() + 1);
+                    } else if (plan.period === 'Yearly') {
+                        endDate.setFullYear(endDate.getFullYear() + 1);
+                    }
+
+                    await prisma.subscription.create({
+                        data: {
+                            tenantId: parseInt(id),
+                            planId: parseInt(planId),
+                            subscriber: ownerName || updatedGym.owner || updatedGym.name,
+                            startDate,
+                            endDate,
+                            status: 'Active',
+                            paymentStatus: 'Paid'
+                        }
+                    });
+                }
+            }
+        }
         res.json(updatedGym);
     } catch (error) {
         res.status(500).json({ message: error.message });

@@ -3,16 +3,22 @@ const express = require('express');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
 const dotenv = require('dotenv');
+const compression = require('compression');
+const responseTime = require('response-time');
 
 dotenv.config();
 
 const app = express();
 
 // Middleware
-app.use((req, res, next) => {
-    console.log(`${req.method} ${req.url}`);
-    next();
-});
+app.use(compression());
+app.use(responseTime((req, res, time) => {
+    if (time > 1000) { // Log slow requests (over 1s)
+        console.warn(`[SLOW_API] ${req.method} ${req.url} took ${time.toFixed(2)}ms`);
+    } else {
+        console.log(`${req.method} ${req.url} took ${time.toFixed(2)}ms`);
+    }
+}));
 app.use(cors({
     origin: function (origin, callback) {
         callback(null, true);

@@ -17,6 +17,7 @@
     "@prisma/client": "^5.15.0",
     "bcryptjs": "^3.0.3",
     "cloudinary": "^2.9.0",
+    "compression": "^1.8.1",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
     "dotenv": "^17.3.1",
@@ -26,7 +27,8 @@
     "mysql2": "^3.17.2",
     "nodemon": "^3.1.11",
     "pdfkit": "^0.17.2",
-    "qrcode": "^1.5.4"
+    "qrcode": "^1.5.4",
+    "response-time": "^2.3.4"
   },
   "devDependencies": {
     "prisma": "^5.15.0"
