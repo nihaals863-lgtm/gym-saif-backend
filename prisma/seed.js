@@ -5,45 +5,80 @@ const bcrypt = require('bcryptjs');
 const prisma = new PrismaClient();
 
 async function main() {
-    const hashedPassword = await bcrypt.hash('admin123', 10);
+    const hashedPassword = await bcrypt.hash('123', 10);
 
-    // Cleanup existing data
+    // Cleanup existing data in correct order to avoid FK constraints
+    console.log("Cleaning up database...");
+    
+    // Level 4 (Deepest dependencies)
+    await prisma.invoiceItem.deleteMany();
+    await prisma.storeOrderItem.deleteMany();
+    await prisma.maintenanceRequest.deleteMany();
+    await prisma.followUp.deleteMany();
+    await prisma.transaction.deleteMany();
+
+    // Level 3 (Depends on Level 2)
     await prisma.booking.deleteMany();
-    await prisma.attendance.deleteMany();
-    await prisma.announcement.deleteMany();
     await prisma.memberProgress.deleteMany();
+    await prisma.pTSession.deleteMany();
+    await prisma.chatMessage.deleteMany();
+
+    // Level 2 (Depends on Level 1: Member/Lead/User)
+    await prisma.serviceRequest.deleteMany();
+    await prisma.pTMemberAccount.deleteMany();
+    await prisma.storeOrder.deleteMany();
+    await prisma.invoice.deleteMany();
+    await prisma.locker.deleteMany();
+    await prisma.attendance.deleteMany();
+    await prisma.leaveRequest.deleteMany();
+    await prisma.payroll.deleteMany();
+    await prisma.notification.deleteMany();
+    await prisma.task.deleteMany();
+    await prisma.wallet.deleteMany();
+    await prisma.reward.deleteMany();
+    await prisma.feedback.deleteMany();
+    await prisma.dietPlan.deleteMany();
+    await prisma.workoutPlan.deleteMany();
+
+    // Level 1 (Depends on Level 0: Tenant/User/Plan)
     await prisma.member.deleteMany();
     await prisma.class.deleteMany();
+    await prisma.lead.deleteMany();
+    await prisma.equipment.deleteMany();
+    await prisma.storeProduct.deleteMany();
+    await prisma.expense.deleteMany();
+    await prisma.inventory.deleteMany();
+    await prisma.amenity.deleteMany();
+    await prisma.announcement.deleteMany();
+    await prisma.messageTemplate.deleteMany();
+    await prisma.communicationLog.deleteMany();
+    await prisma.tenantSettings.deleteMany();
+    await prisma.trainerAvailability.deleteMany();
+    await prisma.coupon.deleteMany();
+    await prisma.pTPackage.deleteMany();
+
+    // Level 0 (Base models)
     await prisma.membershipPlan.deleteMany();
     await prisma.user.deleteMany();
-    await prisma.tenant.deleteMany();
-    await prisma.storeOrderItem.deleteMany();
-    await prisma.storeOrder.deleteMany();
-    await prisma.storeProduct.deleteMany();
+    await prisma.expenseCategory.deleteMany();
     await prisma.storeCategory.deleteMany();
+    await prisma.subscription.deleteMany();
+    await prisma.saaSPlan.deleteMany();
+    await prisma.saasPayment.deleteMany();
+    await prisma.webhookLog.deleteMany();
+    await prisma.auditLog.deleteMany();
+    await prisma.device.deleteMany();
+    await prisma.tenant.deleteMany();
 
     console.log("Database cleared.");
 
-    // Create Superadmin
-    const superadmin = await prisma.user.upsert({
-        where: { email: 'admin@newgym.com' },
-        update: {},
-        create: {
-            email: 'admin@newgym.com',
-            password: hashedPassword,
-            name: 'Super Admin',
-            role: 'SUPER_ADMIN',
-            status: 'Active',
-        },
-    });
-
-    // Create Test Gym (Tenant)
+    // Create Default Gym (Tenant)
     const testGym = await prisma.tenant.upsert({
         where: { id: 1 },
         update: {},
         create: {
             id: 1,
-            name: 'Test Elite Gym',
+            name: 'Default Gym',
             branchName: 'Main Branch',
             owner: 'Test Owner',
             phone: '1234567890',
@@ -52,92 +87,39 @@ async function main() {
         }
     });
 
-    // Create Test Branch Admin
-    const branchHashedPassword = await bcrypt.hash('123456', 10);
-    const branchAdmin = await prisma.user.upsert({
-        where: { email: 'testbranch@gym.com' },
-        update: {
-            tenantId: testGym.id // Ensure it's linked
-        },
-        create: {
-            email: 'testbranch@gym.com',
-            password: branchHashedPassword,
-            name: 'Test Branch Admin',
-            role: 'BRANCH_ADMIN',
-            status: 'Active',
-            tenantId: testGym.id
-        },
-    });
+    // Create Users
+    console.log("Creating users...");
+    const users = [
+        { email: 'superadmin@gmail.com', name: 'Super Admin', role: 'SUPER_ADMIN', tenantId: null },
+        { email: 'admin@gmail.com', name: 'Branch Admin', role: 'BRANCH_ADMIN', tenantId: 1 },
+        { email: 'manager@gmail.com', name: 'Gym Manager', role: 'MANAGER', tenantId: 1 },
+        { email: 'staff@gmail.com', name: 'Gym Staff', role: 'STAFF', tenantId: 1 },
+        { email: 'trainer@gmail.com', name: 'Gym Trainer', role: 'TRAINER', tenantId: 1 },
+        { email: 'member@gmail.com', name: 'Gym Member', role: 'MEMBER', tenantId: 1 }
+    ];
 
-    // Create Dummy Manager
-    const manager = await prisma.user.upsert({
-        where: { email: 'manager@gym.com' },
-        update: { tenantId: testGym.id },
-        create: {
-            email: 'manager@gym.com',
-            password: await bcrypt.hash('manager123', 10),
-            name: 'Test Manager',
-            role: 'MANAGER',
-            status: 'Active',
-            tenantId: testGym.id
-        }
-    });
+    for (const u of users) {
+        await prisma.user.upsert({
+            where: { email: u.email },
+            update: {
+                password: hashedPassword,
+                role: u.role,
+                tenantId: u.tenantId
+            },
+            create: {
+                email: u.email,
+                password: hashedPassword,
+                name: u.name,
+                role: u.role,
+                status: 'Active',
+                tenantId: u.tenantId
+            }
+        });
+    }
 
-    // Create Dummy Staff
-    const staff = await prisma.user.upsert({
-        where: { email: 'staff@gym.com' },
-        update: { tenantId: testGym.id },
-        create: {
-            email: 'staff@gym.com',
-            password: await bcrypt.hash('staff123', 10),
-            name: 'Test Staff',
-            role: 'STAFF',
-            status: 'Active',
-            tenantId: testGym.id
-        }
-    });
-
-    console.log("Creating store categories...");
-    // Create dummy Product Categories
-    const supplementsCategory = await prisma.storeCategory.upsert({
-        where: { id: 1 },
-        update: {},
-        create: {
-            id: 1,
-            tenantId: 1,
-            name: "Supplements",
-            description: "High quality protein, vitamins and pre-workouts",
-            sortOrder: 1,
-            status: "Active"
-        }
-    });
-
-    const accessoriesCategory = await prisma.storeCategory.upsert({
-        where: { id: 2 },
-        update: {},
-        create: {
-            id: 2,
-            tenantId: 1,
-            name: "Accessories",
-            description: "Gloves, belts, shakers and more",
-            sortOrder: 2,
-            status: "Active"
-        }
-    });
-
-    // Create Dummy Trainer
-    const trainer = await prisma.user.upsert({
-        where: { email: 'trainer@gym.com' },
-        update: { tenantId: testGym.id },
-        create: {
-            email: 'trainer@gym.com',
-            password: await bcrypt.hash('trainer123', 10),
-            name: 'Test Trainer',
-            role: 'TRAINER',
-            status: 'Active',
-            tenantId: testGym.id
-        }
-    });
+    const trainer = await prisma.user.findFirst({ where: { role: 'TRAINER', tenantId: 1 } });
+    const superadmin = await prisma.user.findFirst({ where: { role: 'SUPER_ADMIN' } });
+    const memberUser = await prisma.user.findFirst({ where: { email: 'member@gmail.com' } });
 
     // Create dummy Membership Plan
     const elitePlan = await prisma.membershipPlan.upsert({
@@ -155,20 +137,6 @@ async function main() {
                 { name: 'Ice Bath', limit: 2 },
                 { name: 'PT Sessions', limit: 10 }
             ])
-        }
-    });
-
-    // Create Member User
-    const memberUser = await prisma.user.upsert({
-        where: { email: 'member@gym.com' },
-        update: { tenantId: testGym.id },
-        create: {
-            email: 'member@gym.com',
-            password: await bcrypt.hash('member123', 10),
-            name: 'Test Member',
-            role: 'MEMBER',
-            status: 'Active',
-            tenantId: testGym.id
         }
     });
 
@@ -320,7 +288,7 @@ async function main() {
             tenantId: testGym.id,
             title: 'New Boxing Batch',
             content: 'Boxing batch starting from this Monday for all elite members.',
-            priority: 'high',
+            priority: 1,
             targetRole: 'member',
             authorId: superadmin.id
         }
@@ -368,12 +336,12 @@ async function main() {
 
     console.log("Seeding completed successfully.");
     console.log("--- Logins ---");
-    console.log("SuperAdmin: admin@newgym.com / admin123");
-    console.log("BranchAdmin: testbranch@gym.com / 123456");
-    console.log("Manager: manager@gym.com / manager123");
-    console.log("Staff: staff@gym.com / staff123");
-    console.log("Trainer: trainer@gym.com / trainer123");
-    console.log("Member: member@gym.com / member123");
+    console.log("SuperAdmin: superadmin@gmail.com / 123");
+    console.log("BranchAdmin: admin@gmail.com / 123");
+    console.log("Manager: manager@gmail.com / 123");
+    console.log("Staff: staff@gmail.com / 123");
+    console.log("Trainer: trainer@gmail.com / 123");
+    console.log("Member: member@gmail.com / 123");
 }
 
 main()
