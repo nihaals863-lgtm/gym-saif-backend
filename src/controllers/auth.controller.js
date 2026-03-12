@@ -18,7 +18,12 @@ const login = async (req, res) => {
 
         // Check for suspended tenant
         if (user.role !== 'SUPER_ADMIN' && user.tenant?.status === 'Suspended') {
-            return res.status(403).json({ message: 'This gym is currently suspended. Please contact support.' });
+            const settings = await prisma.saaSSettings.findFirst();
+            const supportNum = settings?.supportNumber || 'our support team';
+            return res.status(403).json({ 
+                message: `This gym is currently suspended. Please contact support at ${supportNum}.`,
+                supportNumber: supportNum 
+            });
         }
 
         const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET, {

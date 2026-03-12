@@ -987,6 +987,7 @@ const updateGlobalSettings = async (req, res) => {
                 supportEmail: req.body.supportEmail,
                 contactPhone: req.body.contactPhone,
                 contactAddress: req.body.contactAddress,
+                supportNumber: req.body.supportNumber,
                 currency: req.body.currency,
                 timezone: req.body.timezone
             }

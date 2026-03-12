@@ -193,6 +193,7 @@ model SaaSSettings {
   contactAddress     String? @db.Text
   contactPhone       String?
   supportEmail       String?
+  supportNumber      String?
 
   @@map("saassettings")
 }
