@@ -3109,9 +3109,45 @@ const updateServiceRequestStatus = async (req, res) => {
     }
 };
 
+const getAttendanceQrPreview = async (req, res) => {
+    try {
+        const headerTenantId = req.headers['x-tenant-id'];
+        const tenantId = (req.user.role === 'SUPER_ADMIN' && headerTenantId) 
+            ? parseInt(headerTenantId) 
+            : req.user.tenantId;
+
+        if (!tenantId) {
+            return res.status(400).json({ message: 'Branch ID is required to generate QR code.' });
+        }
+        
+        // Generate QR Code data using dynamic frontend origin
+        const frontendUrl = req.headers.origin || 'http://localhost:5173';
+        const qrData = `${frontendUrl}/scan?branchId=${tenantId}&token=GYM_${tenantId}_SECURE`;
+
+        const qrCodeDataUrl = await QRCode.toDataURL(qrData, {
+            errorCorrectionLevel: 'H',
+            margin: 1,
+            width: 400
+        });
+
+        res.json({ qrCodeDataUrl });
+    } catch (error) {
+        console.error('QR Preview Error:', error);
+        res.status(500).json({ message: 'Failed to generate QR preview' });
+    }
+};
+
 const downloadAttendanceQrCode = async (req, res) => {
     try {
-        const tenantId = req.user.tenantId;
+        const headerTenantId = req.headers['x-tenant-id'];
+        const tenantId = (req.user.role === 'SUPER_ADMIN' && headerTenantId) 
+            ? parseInt(headerTenantId) 
+            : req.user.tenantId;
+
+        if (!tenantId) {
+            return res.status(400).json({ message: 'Branch ID is required to download QR PDF.' });
+        }
+
         const tenant = await prisma.tenant.findUnique({
             where: { id: tenantId }
         });
@@ -3259,5 +3295,6 @@ module.exports = {
     updateTenantSettings,
     getTrainerStats,
     getSystemHealth,
-    downloadAttendanceQrCode
+    downloadAttendanceQrCode,
+    getAttendanceQrPreview
 };

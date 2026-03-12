@@ -69,7 +69,8 @@ const {
     updateTenantSettings,
     getTrainerStats,
     getSystemHealth,
-    downloadAttendanceQrCode
+    downloadAttendanceQrCode,
+    getAttendanceQrPreview
 } = require('../controllers/admin.controller');
 const { getTrainerRequests, updateTrainerRequest, updateStaffMember, deleteStaffMember } = require('../controllers/superadmin.controller');
 const { protect, authorize } = require('../middleware/auth.middleware');
@@ -117,6 +118,7 @@ router.delete('/bookings/:id', deleteBooking);
 router.get('/attendance', getCheckIns);
 router.get('/attendance/stats', getAttendanceStats);
 router.get('/attendance/live', getLiveCheckIn);
+router.get('/attendance-qr/preview', getAttendanceQrPreview);
 router.get('/attendance-qr/download-pdf', downloadAttendanceQrCode);
 router.delete('/attendance/:id', deleteCheckIn);
 
