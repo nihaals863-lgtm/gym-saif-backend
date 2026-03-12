@@ -41,8 +41,7 @@ const getAllMembers = async (req, res) => {
                     },
                     select: { id: true }
                 });
-                const managedBranchIds = branches.map(b => b.id);
-                where.tenantId = { in: managedBranchIds };
+                where.tenantId = { in: branches.map(b => b.id) };
             }
         }
 
@@ -51,11 +50,12 @@ const getAllMembers = async (req, res) => {
         }
 
         if (search) {
+            const searchLower = search.trim();
             where.OR = [
-                { name: { contains: search } },
-                { memberId: { contains: search } },
-                { phone: { contains: search } },
-                { email: { contains: search } }
+                { name: { contains: searchLower } },
+                { memberId: { contains: searchLower } },
+                { phone: { contains: searchLower } },
+                { email: { contains: searchLower } }
             ];
         }
 
@@ -463,9 +463,8 @@ const getAllStaff = async (req, res) => {
                     where: { OR: orConditions },
                     select: { id: true }
                 });
-                const managedBranchIds = branches.map(b => b.id);
-                where.tenantId = { in: managedBranchIds };
-                console.log(`[getAllStaff] Managed branches: ${managedBranchIds}`);
+                where.tenantId = { in: branches.map(b => b.id) };
+                console.log(`[getAllStaff] Managed branches: ${where.tenantId.in}`);
             }
         }
 

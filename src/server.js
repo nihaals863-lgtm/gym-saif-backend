@@ -1,6 +1,6 @@
 // gym_backend/src/server.js
 const app = require('./app');
-// Trigger restart 
+// Trigger restart - port 8000 cleared
 
 const PORT = process.env.PORT || 8000;
 

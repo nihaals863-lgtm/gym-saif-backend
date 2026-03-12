@@ -16,6 +16,11 @@ const login = async (req, res) => {
             return res.status(401).json({ message: 'Invalid email or password' });
         }
 
+        // Check for suspended tenant
+        if (user.role !== 'SUPER_ADMIN' && user.tenant?.status === 'Suspended') {
+            return res.status(403).json({ message: 'This gym is currently suspended. Please contact support.' });
+        }
+
         const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET, {
             expiresIn: process.env.JWT_EXPIRES_IN
         });

@@ -43,6 +43,7 @@ model Tenant {
   ptPackages        PTPackage[]
   ptAccounts        PTMemberAccount[]
   ptSessions        PTSession[]
+  subscriptions     Subscription[]
 
   @@map("tenant")
 }
@@ -123,7 +124,8 @@ model SaaSPlan {
   description String?  @db.Text
   limits      String?  @db.LongText
   opsLimits   String?  @db.LongText
-  updatedAt   DateTime @updatedAt
+  updatedAt     DateTime       @updatedAt
+  subscriptions Subscription[]
 
   @@map("saasplan")
 }
@@ -137,7 +139,11 @@ model Subscription {
   endDate       DateTime
   status        String
   paymentStatus String
+  tenant        Tenant   @relation(fields: [tenantId], references: [id])
+  plan          SaaSPlan @relation(fields: [planId], references: [id])
 
+  @@index([tenantId], map: "subscription_tenantId_fkey")
+  @@index([planId], map: "subscription_planId_fkey")
   @@map("subscription")
 }
 
@@ -261,6 +267,9 @@ model Member {
   @@index([planId], map: "member_planId_fkey")
   @@index([tenantId], map: "member_tenantId_fkey")
   @@index([trainerId], map: "member_trainerId_fkey")
+  @@index([name])
+  @@index([phone])
+  @@index([email])
   @@map("member")
 }
 
@@ -331,6 +340,9 @@ model Lead {
 
   @@index([assignedToId], map: "lead_assignedToId_fkey")
   @@index([tenantId], map: "lead_tenantId_fkey")
+  @@index([name])
+  @@index([phone])
+  @@index([email])
   @@map("lead")
 }
 
@@ -477,6 +489,8 @@ model Invoice {
   tenant        Tenant        @relation(fields: [tenantId], references: [id])
 
   @@index([tenantId], map: "invoice_tenantId_fkey")
+  @@index([status])
+  @@index([paidDate])
   @@map("invoice")
 }
 
@@ -530,7 +544,7 @@ model Attendance {
   checkIn  DateTime?
   checkOut DateTime?
   type     String
-  date     DateTime  @default(now()) @db.Date
+  date     DateTime  @default(now())
   status   String    @default("Present")
   tenantId Int       @default(1)
   tenant   Tenant    @relation(fields: [tenantId], references: [id])
