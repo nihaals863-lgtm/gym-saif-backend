@@ -396,9 +396,10 @@ const updateMember = async (req, res) => {
 const deleteMember = async (req, res) => {
     try {
         const { id } = req.params;
+        const memberId = parseInt(id);
         const { role, tenantId, email, name: userName } = req.user;
 
-        const member = await prisma.member.findUnique({ where: { id: parseInt(id) } });
+        const member = await prisma.member.findUnique({ where: { id: memberId } });
         if (!member) return res.status(404).json({ message: 'Member not found' });
 
         if (role !== 'SUPER_ADMIN' && member.tenantId !== tenantId) {
@@ -408,12 +409,60 @@ const deleteMember = async (req, res) => {
             if (!isOwner) return res.status(403).json({ message: 'Not authorized to delete this member' });
         }
 
-        await prisma.member.delete({ where: { id: parseInt(id) } });
+        await prisma.$transaction(async (tx) => {
+            // 1. Delete Service Requests
+            await tx.serviceRequest.deleteMany({ where: { memberId } }).catch(() => {});
+
+            // 2. Delete Bookings
+            await tx.booking.deleteMany({ where: { memberId } }).catch(() => {});
+
+            // 3. Delete Invoice Items first, then Invoices
+            const invoices = await tx.invoice.findMany({ where: { memberId }, select: { id: true } });
+            if (invoices.length > 0) {
+                const invoiceIds = invoices.map(inv => inv.id);
+                await tx.invoiceItem.deleteMany({ where: { invoiceId: { in: invoiceIds } } }).catch(() => {});
+            }
+            await tx.invoice.deleteMany({ where: { memberId } }).catch(() => {});
+
+            // 4. Delete Attendance records
+            await tx.attendance.deleteMany({ where: { memberId } }).catch(() => {});
+
+            // 5. Delete Wallet Transactions, then Wallet
+            const wallet = await tx.wallet.findFirst({ where: { memberId } }).catch(() => null);
+            if (wallet) {
+                await tx.transaction.deleteMany({ where: { walletId: wallet.id } }).catch(() => {});
+                await tx.wallet.delete({ where: { id: wallet.id } }).catch(() => {});
+            }
+
+            // 6. Delete Member Progress
+            await tx.memberProgress.deleteMany({ where: { memberId } }).catch(() => {});
+
+            // 7. Delete Feedback
+            await tx.feedback.deleteMany({ where: { memberId } }).catch(() => {});
+
+            // 8. Delete Store Order Items first, then Store Orders
+            const storeOrders = await tx.storeOrder.findMany({ where: { memberId }, select: { id: true } });
+            if (storeOrders.length > 0) {
+                const orderIds = storeOrders.map(o => o.id);
+                await tx.storeOrderItem.deleteMany({ where: { orderId: { in: orderIds } } }).catch(() => {});
+            }
+            await tx.storeOrder.deleteMany({ where: { memberId } }).catch(() => {});
+
+            // 9. Delete PT Sessions, then PT Member Account
+            await tx.pTSession.deleteMany({ where: { memberId } }).catch(() => {});
+            await tx.pTMemberAccount.deleteMany({ where: { memberId } }).catch(() => {});
+
+            // 10. Finally delete the Member
+            await tx.member.delete({ where: { id: memberId } });
+        });
+
         res.json({ message: 'Member deleted successfully' });
     } catch (error) {
+        console.error('Delete member error:', error);
         res.status(500).json({ message: error.message });
     }
 };
+
 
 const toggleMemberStatus = async (req, res) => {
     try {

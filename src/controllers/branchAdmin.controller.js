@@ -162,11 +162,75 @@ const getDashboardStats = async (req, res) => {
             count: todayCheckInsRaw.filter(a => new Date(a.checkIn).getHours() === h).length
         })).filter(h => h.hour >= 5 && h.hour <= 22);
 
+        // Fetch Recent Feedback (Member Voice) — safe query with manual member enrichment
+        let recentFeedback = [];
+        try {
+            const feedbackTenantId = whereClause.tenantId;
+            const feedbackQuery = {};
+            if (feedbackTenantId) {
+                feedbackQuery.tenantId = feedbackTenantId;
+            }
+
+            const rawFeedbacks = await prisma.feedback.findMany({
+                where: feedbackQuery,
+                take: 3,
+                orderBy: { date: 'desc' }
+            });
+
+            // Enrich with member names
+            for (const f of rawFeedbacks) {
+                let memberName = 'Anonymous';
+                let memberAvatar = null;
+                if (f.memberId) {
+                    const member = await prisma.member.findUnique({
+                        where: { id: f.memberId },
+                        select: { name: true, avatar: true }
+                    }).catch(() => null);
+                    if (member) {
+                        memberName = member.name || 'Anonymous';
+                        memberAvatar = member.avatar;
+                    }
+                }
+                recentFeedback.push({
+                    id: f.id,
+                    memberName,
+                    rating: f.rating,
+                    comment: f.comment,
+                    date: f.date,
+                    avatar: memberAvatar
+                });
+            }
+        } catch (fbErr) {
+            console.warn('Feedback fetch skipped:', fbErr.message);
+        }
+
+        // Calculate Net Profit for Store (Sale Price - Cost Price)
+        const storeOrderItemsMTD = await prisma.storeOrderItem.findMany({
+            where: {
+                order: {
+                    ...whereClause,
+                    status: { in: ['Paid', 'Completed', 'Processing'] },
+                    date: { gte: startOfMonth }
+                }
+            },
+            include: {
+                product: {
+                    select: { costPrice: true }
+                }
+            }
+        });
+
+        const storeNetProfit = storeOrderItemsMTD.reduce((sum, item) => {
+            const salePrice = Number(item.priceAtBuy) || 0;
+            const costPrice = Number(item.product?.costPrice) || 0;
+            return sum + (item.quantity * (salePrice - costPrice));
+        }, 0);
+
         res.json({
             stats: [
                 { id: 1, title: 'Total Members', value: totalMembers, icon: 'Users', trend: 'Live', color: 'primary' },
                 { id: 2, title: 'Monthly Revenue', value: `₹${totalMonthlyRevenue}`, icon: 'DollarSign', trend: 'This Month', color: 'success' },
-                { id: 3, title: 'Expiring Soon', value: expiringSoonCount, icon: 'CheckCircle', trend: 'Review Needed', color: 'warning' },
+                { id: 3, title: 'Store Sales', value: `₹${Number(revenueStore._sum.total || 0).toFixed(0)}`, icon: 'ShoppingBag', trend: 'Monthly', color: 'warning' },
                 { id: 4, title: 'Today Check-ins', value: todaysCheckIns, icon: 'CheckCircle', trend: 'Today', color: 'primary' },
             ],
             newLeads,
@@ -185,8 +249,12 @@ const getDashboardStats = async (req, res) => {
             },
             liveOccupancy: {
                 current: todaysCheckIns,
-                capacity: 50
-            }
+                capacity: 50 // In a real scenario, this could be fetched from Tenant settings
+            },
+            netProfit: storeNetProfit,
+            storeSales: Number(revenueStore._sum.total || 0),
+            recentFeedback
+
         });
 
     } catch (error) {
@@ -575,7 +643,7 @@ const getPerformanceReport = async (req, res) => {
             }),
             prisma.storeOrder.findMany({
                 where: { ...whereClause, status: { in: ['Paid', 'Completed', 'Processing'] }, date: { gte: new Date(new Date().setFullYear(today.getFullYear() - 1)) } },
-                select: { total: true, date: true }
+                include: { items: { include: { product: { select: { costPrice: true } } } } }
             }),
             prisma.expense.findMany({
                 where: { ...whereClause, date: { gte: new Date(new Date().setFullYear(today.getFullYear() - 1)) } },
@@ -591,6 +659,7 @@ const getPerformanceReport = async (req, res) => {
             })
         ]);
 
+        const totalRevenueStoreInvoices = bulkOrders.reduce((sum, o) => sum + Number(o.total), 0);
         const revenueThisMonth = Number(revenueMtdInvoice._sum.amount || 0) + Number(revenueMtdStore._sum.total || 0);
         const pendingDues = Number(pendingDuesInvoice._sum.amount || 0) + Number(pendingDuesStore._sum.total || 0);
         const totalInvoiced = Number(totalInvoicedInMonth._sum.amount || 0) + Number(totalStoreInvoicedInMonth._sum.total || 0);
@@ -606,18 +675,32 @@ const getPerformanceReport = async (req, res) => {
         const growthLabels = [];
         let totalIncome = 0;
         let totalExpenses = 0;
+        let totalNetProfitCalculated = 0;
 
         for (let i = 11; i >= 0; i--) {
             const date = new Date(today.getFullYear(), today.getMonth() - i, 1);
             const m = date.getMonth();
             const y = date.getFullYear();
 
-            const r = bulkInvoices
+            const membershipR = bulkInvoices
                 .filter(inv => { const d = new Date(inv.paidDate); return d.getMonth() === m && d.getFullYear() === y; })
-                .reduce((s, i) => s + Number(i.amount), 0) +
-                bulkOrders
-                .filter(o => { const d = new Date(o.date); return d.getMonth() === m && d.getFullYear() === y; })
-                .reduce((s, o) => s + Number(o.total), 0);
+                .reduce((s, i) => s + Number(i.amount), 0);
+            
+            const ordersInMonth = bulkOrders
+                .filter(o => { const d = new Date(o.date); return d.getMonth() === m && d.getFullYear() === y; });
+
+            const storeR = ordersInMonth.reduce((s, o) => s + Number(o.total), 0);
+            const r = membershipR + storeR;
+
+            // Calculate Store Net Profit (Sale - Cost) for the month
+            const storeMonthProfit = ordersInMonth.reduce((acc, order) => {
+                const orderProfit = order.items.reduce((sum, item) => {
+                    const sale = Number(item.priceAtBuy) || 0;
+                    const cost = Number(item.product?.costPrice) || 0;
+                    return sum + (item.quantity * (sale - cost));
+                }, 0);
+                return acc + orderProfit;
+            }, 0);
 
             const e = bulkExpenses
                 .filter(ex => { const d = new Date(ex.date); return d.getMonth() === m && d.getFullYear() === y; })
@@ -625,13 +708,14 @@ const getPerformanceReport = async (req, res) => {
 
             totalIncome += r;
             totalExpenses += e;
+            totalNetProfitCalculated += storeMonthProfit;
 
             const g = growthStats
                 .filter(mem => { const d = new Date(mem.joinDate); return d.getMonth() === m && d.getFullYear() === y; }).length;
 
             earningsMonths.push(date.toLocaleString('default', { month: 'short' }).toUpperCase());
             earningsValues.push((r / 1000).toFixed(1));
-            profitValues.push(((r - e) / 1000).toFixed(1));
+            profitValues.push((storeMonthProfit / 1000).toFixed(1)); // Using Store Net Profit as profit per request
             expenseValues.push((e / 1000).toFixed(1));
             growthLabels.push(date.toLocaleString('default', { month: 'short' }));
             growthMonths.push(g);
@@ -740,7 +824,8 @@ const getPerformanceReport = async (req, res) => {
             recentOrders: recentOrders.map(o => ({
                 ...o,
                 date: o.date.toISOString().split('T')[0]
-            }))
+            })),
+            totalNetProfit: totalNetProfitCalculated
         });
 
     } catch (error) {
