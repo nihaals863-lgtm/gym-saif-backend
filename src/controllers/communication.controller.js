@@ -69,7 +69,7 @@ const getAnnouncements = async (req, res) => {
 // CREATE Announcement
 const createAnnouncement = async (req, res) => {
     try {
-        const { title, content, targetRole, priority, status } = req.body;
+        const { title, content, message, targetRole, priority, status } = req.body;
         const tenantId = req.user.tenantId || 1;
         const authorId = req.user.id;
 
@@ -78,7 +78,7 @@ const createAnnouncement = async (req, res) => {
                 tenantId,
                 authorId,
                 title,
-                content,
+                content: content || message,
                 targetRole: targetRole || 'all',
                 priority: parseInt(priority) || 0,
                 status: status || 'Active'
@@ -86,6 +86,44 @@ const createAnnouncement = async (req, res) => {
         });
 
         res.status(201).json(announcement);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// UPDATE Announcement
+const updateAnnouncement = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { title, content, message, targetRole, priority, status } = req.body;
+
+        const announcement = await prisma.announcement.update({
+            where: { id: parseInt(id) },
+            data: {
+                title,
+                content: content || message,
+                targetRole,
+                priority: priority ? parseInt(priority) : undefined,
+                status
+            }
+        });
+
+        res.json(announcement);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// DELETE Announcement
+const deleteAnnouncement = async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        await prisma.announcement.delete({
+            where: { id: parseInt(id) }
+        });
+
+        res.json({ message: 'Announcement deleted successfully' });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -350,7 +388,7 @@ const getChatContacts = async (req, res) => {
 
 const sendChatMessage = async (req, res) => {
     try {
-        const { receiverId, message, receiverType } = req.body;
+        const { receiverId, message, receiverType, attachmentUrl, attachmentType } = req.body;
         const tenantId = req.user.tenantId || 1;
         const senderId = req.user.id;
 
@@ -372,7 +410,9 @@ const sendChatMessage = async (req, res) => {
                 tenantId,
                 senderId,
                 receiverId: actualReceiverUserId,
-                message
+                message,
+                attachmentUrl,
+                attachmentType: attachmentType || (attachmentUrl ? 'image' : null)
             }
         });
 
@@ -419,10 +459,68 @@ const getChatMessages = async (req, res) => {
     }
 };
 
+// Birthday Reminder Logic
+const checkBirthdays = async (req, res) => {
+    try {
+        const today = new Date();
+        const mmdd = today.toISOString().slice(5, 10); // "MM-DD"
+
+        const members = await prisma.member.findMany({
+            where: {
+                status: 'Active',
+                dob: { contains: mmdd }
+            },
+            include: {
+                tenant: true
+            }
+        });
+
+        const results = [];
+
+        for (const member of members) {
+            // 1. Create a Notification for the member
+            if (member.userId) {
+                await prisma.notification.create({
+                    data: {
+                        userId: member.userId,
+                        title: 'Happy Birthday! 🎂',
+                        message: `Happy Birthday ${member.name}! Have a fantastic day ahead.`,
+                        type: 'success'
+                    }
+                });
+            }
+
+            // 2. Log it in Communication Logs
+            await prisma.communicationLog.create({
+                data: {
+                    tenantId: member.tenantId,
+                    memberId: member.id,
+                    channel: 'System',
+                    message: `Automated Birthday Wish sent to ${member.name}`,
+                    status: 'Sent'
+                }
+            });
+
+            results.push({ id: member.id, name: member.name });
+        }
+
+        if (res) {
+            res.json({ message: `Birthday checks completed. ${results.length} wishes sent.`, wishes: results });
+        } else {
+            console.log(`[AUTOMATION] Birthday checks completed. ${results.length} wishes sent.`);
+        }
+    } catch (error) {
+        if (res) res.status(500).json({ message: error.message });
+        else console.error('[AUTOMATION] Birthday check error:', error);
+    }
+};
+
 module.exports = {
     getCommStats,
     getAnnouncements,
     createAnnouncement,
+    updateAnnouncement,
+    deleteAnnouncement,
     getTemplates,
     createTemplate,
     deleteTemplate,
@@ -430,5 +528,6 @@ module.exports = {
     getCommLogs,
     getChatContacts,
     sendChatMessage,
-    getChatMessages
+    getChatMessages,
+    checkBirthdays
 };

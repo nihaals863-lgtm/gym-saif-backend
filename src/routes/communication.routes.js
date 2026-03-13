@@ -3,6 +3,8 @@ const {
     getCommStats,
     getAnnouncements,
     createAnnouncement,
+    updateAnnouncement,
+    deleteAnnouncement,
     getTemplates,
     createTemplate,
     deleteTemplate,
@@ -10,7 +12,8 @@ const {
     getCommLogs,
     getChatContacts,
     getChatMessages,
-    sendChatMessage
+    sendChatMessage,
+    checkBirthdays
 } = require('../controllers/communication.controller');
 const { protect, authorize } = require('../middleware/auth.middleware');
 
@@ -22,6 +25,8 @@ router.use(authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER', 'STAFF', 'TRAINER
 router.get('/stats', getCommStats);
 router.get('/announcements', getAnnouncements);
 router.post('/announcements', createAnnouncement);
+router.put('/announcements/:id', updateAnnouncement);
+router.delete('/announcements/:id', deleteAnnouncement);
 router.get('/templates', getTemplates);
 router.post('/templates', createTemplate);
 router.delete('/templates/:id', deleteTemplate);
@@ -30,5 +35,6 @@ router.get('/logs', getCommLogs);
 router.get('/contacts', getChatContacts);
 router.get('/messages/:contactId', getChatMessages);
 router.post('/messages', sendChatMessage);
+router.post('/birthdays/check', checkBirthdays); // New route
 
 module.exports = router;

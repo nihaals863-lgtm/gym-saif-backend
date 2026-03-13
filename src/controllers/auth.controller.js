@@ -13,6 +13,18 @@ const login = async (req, res) => {
         });
 
         if (!user || !(await bcrypt.compare(password, user.password))) {
+            // Log failed login attempt
+            await prisma.auditLog.create({
+                data: {
+                    userId: user ? user.id : 0, 
+                    action: 'Login Failure',
+                    module: 'Error',
+                    affectedEntity: `User Login: ${email}`,
+                    details: `Failed login attempt for ${email}: Invalid credentials`,
+                    ip: req.ip || req.headers['x-forwarded-for'] || '0.0.0.0',
+                    status: 'Open'
+                }
+            });
             return res.status(401).json({ message: 'Invalid email or password' });
         }
 
@@ -20,6 +32,20 @@ const login = async (req, res) => {
         if (user.role !== 'SUPER_ADMIN' && user.tenant?.status === 'Suspended') {
             const settings = await prisma.saaSSettings.findFirst();
             const supportNum = settings?.supportNumber || 'our support team';
+            
+            // Log access attempt to suspended tenant
+            await prisma.auditLog.create({
+                data: {
+                    userId: user.id,
+                    action: 'Suspended Access Attempt',
+                    module: 'Error',
+                    affectedEntity: `Tenant ID: ${user.tenantId}`,
+                    details: `User ${user.email} tried to access suspended branch ${user.tenant?.name}`,
+                    ip: req.ip || req.headers['x-forwarded-for'] || '0.0.0.0',
+                    status: 'Open'
+                }
+            });
+
             return res.status(403).json({ 
                 message: `This gym is currently suspended. Please contact support at ${supportNum}.`,
                 supportNumber: supportNum 
@@ -35,6 +61,18 @@ const login = async (req, res) => {
             secure: true, // MUST be true for SameSite='none'
             sameSite: 'none', // Allows cross-origin cookies
             maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+        });
+
+        // Log the login event
+        await prisma.auditLog.create({
+            data: {
+                userId: user.id,
+                action: 'Login',
+                module: 'Auth',
+                details: `User ${user.email} logged in successfully`,
+                ip: req.ip || req.headers['x-forwarded-for'] || '0.0.0.0',
+                status: 'Success'
+            }
         });
 
         res.json({

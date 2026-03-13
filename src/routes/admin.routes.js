@@ -70,7 +70,10 @@ const {
     getTrainerStats,
     getSystemHealth,
     downloadAttendanceQrCode,
-    getAttendanceQrPreview
+    getAttendanceQrPreview,
+    runReminders,
+    getNotificationSettings,
+    updateNotificationSettings
 } = require('../controllers/admin.controller');
 const { getTrainerRequests, updateTrainerRequest, updateStaffMember, deleteStaffMember } = require('../controllers/superadmin.controller');
 const { protect, authorize } = require('../middleware/auth.middleware');
@@ -89,6 +92,9 @@ router.use(authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER', 'STAFF', 'TRAINER
 // Settings
 router.get('/settings/tenant', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), getTenantSettings);
 router.patch('/settings/tenant', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), updateTenantSettings);
+router.get('/settings/notifications', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), getNotificationSettings);
+router.patch('/settings/notifications', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), updateNotificationSettings);
+router.post('/settings/reminders/run', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), runReminders);
 
 // Members — STAFF can view only, cannot create/edit/delete
 router.get('/members', getAllMembers);

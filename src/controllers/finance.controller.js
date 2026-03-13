@@ -269,6 +269,39 @@ const receivePayment = async (req, res) => {
             include: { member: true }
         });
 
+        // Log the payment event
+        await prisma.auditLog.create({
+            data: {
+                userId: req.user.id,
+                action: 'Payment',
+                module: 'Finance',
+                details: `Payment of ₹${finalAmount} received via ${method || 'Cash'} for ${newInvoice.member?.name}. Receipt: ${newInvoice.invoiceNumber}`,
+                ip: req.ip || '0.0.0.0',
+                status: 'Success'
+            }
+        });
+
+        // Notify admins/managers
+        const staffToNotify = await prisma.user.findMany({
+            where: {
+                tenantId: tenantId || 1,
+                role: { in: ['BRANCH_ADMIN', 'MANAGER'] }
+            },
+            select: { id: true }
+        });
+
+        if (staffToNotify.length > 0) {
+            await prisma.notification.createMany({
+                data: staffToNotify.map(s => ({
+                    userId: s.id,
+                    title: 'Payment Received',
+                    message: `₹${finalAmount} received from ${newInvoice.member?.name}`,
+                    type: 'success',
+                    link: `/branchadmin/finance/invoices`
+                }))
+            });
+        }
+
         res.status(201).json({
             message: 'Payment received successfully',
             receipt: newInvoice
@@ -357,6 +390,39 @@ const settleInvoice = async (req, res) => {
                 notes: updatedNotes
             }
         });
+
+        // Log the payment settlement
+        await prisma.auditLog.create({
+            data: {
+                userId: req.user.id,
+                action: 'Payment Settlement',
+                module: 'Finance',
+                details: `Invoice ${updatedInvoice.invoiceNumber} settled for ${updatedInvoice.amount}. Method: ${method || 'Cash'}`,
+                ip: req.ip || '0.0.0.0',
+                status: 'Success'
+            }
+        });
+
+        // Notify admins/managers
+        const adminsToNotify = await prisma.user.findMany({
+            where: {
+                tenantId: updatedInvoice.tenantId,
+                role: { in: ['BRANCH_ADMIN', 'MANAGER'] }
+            },
+            select: { id: true }
+        });
+
+        if (adminsToNotify.length > 0) {
+            await prisma.notification.createMany({
+                data: adminsToNotify.map(s => ({
+                    userId: s.id,
+                    title: 'Invoice Settled',
+                    message: `Invoice ${updatedInvoice.invoiceNumber} has been marked as Paid.`,
+                    type: 'success',
+                    link: `/branchadmin/finance/invoices`
+                }))
+            });
+        }
 
         res.json({
             message: 'Invoice settled successfully',

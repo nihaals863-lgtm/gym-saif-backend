@@ -111,12 +111,16 @@ const getAllMembers = async (req, res) => {
 const addMember = async (req, res) => {
     try {
         const { tenantId: userTenantId, email: userEmail, name: userName } = req.user;
-        const {
-            name, email, phone, planId, duration, avatar, benefits, branchId,
-            gender, dob, source, referralCode, idType, idNumber, address,
-            emergencyName, emergencyPhone, fitnessGoal, healthConditions, medicalHistory,
-            startDate
+        const { 
+            name, email, phone, gender, avatar, planId, 
+            startDate, duration, branchIds, effectiveBranchId: effB,
+            benefits, healthConditions, medicalHistory, fitnessGoal, 
+            emergencyName, emergencyPhone, dob, source, 
+            referralCode, idType, idNumber, address,
+            trainerId, branchId
         } = req.body;
+
+
 
         let avatarUrl = null;
         if (avatar && avatar.startsWith('data:image')) {
@@ -224,11 +228,11 @@ const addMember = async (req, res) => {
                     userId: newUser.id,
                     tenantId: tId,
                     name,
-                    email: memberEmailForUser,
+                    email: email || memberEmailForUser,
                     phone,
                     planId: planId ? parseInt(planId) : null,
                     status: 'Active',
-                    avatar: avatarUrl,
+                    avatar: avatarUrl,  
                     gender,
                     dob,
                     source: source || 'Walk-in',
@@ -242,7 +246,8 @@ const addMember = async (req, res) => {
                     medicalHistory: healthConditions || medicalHistory,
                     joinDate: joinDate,
                     expiryDate: expiryDate, // Auto set based on plan duration
-                    benefits: Array.isArray(benefits) ? JSON.stringify(benefits) : (benefits || null)
+                    benefits: Array.isArray(benefits) ? JSON.stringify(benefits) : (benefits || null),
+                    trainerId: trainerId ? parseInt(trainerId) : null
                 }
             });
 
@@ -367,7 +372,8 @@ const updateMember = async (req, res) => {
             name, email, phone, gender, avatar, planId,
             startDate, status, benefits, medicalHistory, healthConditions,
             fitnessGoal, emergencyName, emergencyPhone,
-            dob, source, referralCode, idType, idNumber, address
+            dob, source, referralCode, idType, idNumber, address,
+            trainerId
         } = req.body;
 
         const updateData = {
@@ -386,7 +392,8 @@ const updateMember = async (req, res) => {
             idType,
             idNumber,
             address,
-            benefits: Array.isArray(benefits) ? JSON.stringify(benefits) : (benefits || null)
+            benefits: Array.isArray(benefits) ? JSON.stringify(benefits) : (benefits || null),
+            trainerId: trainerId ? parseInt(trainerId) : null
         };
 
         if (planId) updateData.planId = parseInt(planId);
@@ -408,6 +415,20 @@ const updateMember = async (req, res) => {
             where: { id: parseInt(id) },
             data: updateData
         });
+
+        // Log the change
+        await prisma.auditLog.create({
+            data: {
+                userId: req.user.id,
+                action: 'Member Updated',
+                module: 'Membership',
+                affectedEntity: `Member ID: ${id}`,
+                details: `Details updated for member ${updated.name} (${updated.email})`,
+                ip: req.ip || '0.0.0.0',
+                status: 'Success'
+            }
+        });
+
         res.json(updated);
     } catch (error) {
         console.error('Update member error:', error);
@@ -1797,6 +1818,10 @@ const getAllPlans = async (req, res) => {
                 maxBookingsPerWeek: p.maxBookingsPerWeek,
                 memberCount: p._count?.members || 0,
                 branch: p.tenant?.name || '—',
+                allowTransfer: p.allowTransfer,
+                showInPurchase: p.showInPurchase,
+                showOnDashboard: p.showOnDashboard,
+                includeLocker: p.includeLocker,
                 createdAt: p.createdAt
             };
         });
@@ -1853,12 +1878,16 @@ const createPlan = async (req, res) => {
                     price: parseFloat(planData.price) || 0,
                     duration: parseInt(planData.duration) || 30,
                     durationType: planData.durationType || 'Days',
-                    status: planData.active ? 'Active' : 'Active',
+                    status: planData.status || 'Active',
                     benefits: benefitsStr,
                     cancellationWindow: planData.maxFreezeDays ? parseInt(planData.maxFreezeDays) : 0,
                     creditsPerBooking: planData.creditsPerBooking ? parseInt(planData.creditsPerBooking) : 1,
                     maxBookingsPerDay: planData.maxBookingsPerDay ? parseInt(planData.maxBookingsPerDay) : 1,
-                    maxBookingsPerWeek: planData.maxBookingsPerWeek ? parseInt(planData.maxBookingsPerWeek) : 7
+                    maxBookingsPerWeek: planData.maxBookingsPerWeek ? parseInt(planData.maxBookingsPerWeek) : 7,
+                    allowTransfer: planData.allowTransfer || false,
+                    showInPurchase: planData.showInPurchase !== undefined ? planData.showInPurchase : true,
+                    showOnDashboard: planData.showOnDashboard !== undefined ? planData.showOnDashboard : true,
+                    includeLocker: planData.includeLocker || false
                 }
             });
             createdPlans.push(newPlan);
@@ -1894,6 +1923,10 @@ const updatePlan = async (req, res) => {
         if (planData.creditsPerBooking !== undefined) updateData.creditsPerBooking = parseInt(planData.creditsPerBooking);
         if (planData.maxBookingsPerDay !== undefined) updateData.maxBookingsPerDay = parseInt(planData.maxBookingsPerDay);
         if (planData.maxBookingsPerWeek !== undefined) updateData.maxBookingsPerWeek = parseInt(planData.maxBookingsPerWeek);
+        if (planData.allowTransfer !== undefined) updateData.allowTransfer = planData.allowTransfer;
+        if (planData.showInPurchase !== undefined) updateData.showInPurchase = planData.showInPurchase;
+        if (planData.showOnDashboard !== undefined) updateData.showOnDashboard = planData.showOnDashboard;
+        if (planData.includeLocker !== undefined) updateData.includeLocker = planData.includeLocker;
 
         const updated = await prisma.membershipPlan.update({
             where: { id: parseInt(id) },
@@ -2025,7 +2058,7 @@ const getAllClasses = async (req, res) => {
 const createClass = async (req, res) => {
     try {
         const { tenantId, role } = req.user;
-        const { branchId, name, description, trainerId, schedule, date, time, type, maxCapacity, status, duration } = req.body;
+        const { branchId, name, description, trainerId, schedule, date, time, type, maxCapacity, status, duration, price } = req.body;
 
         let finalSchedule = schedule || {};
         if (date && time) {
@@ -2059,7 +2092,8 @@ const createClass = async (req, res) => {
                     maxCapacity: parseInt(maxCapacity),
                     status: status || 'Scheduled',
                     duration: duration ? String(duration) : '60',
-                    requiredBenefit: finalType
+                    requiredBenefit: finalType,
+                    price: price ? parseFloat(price) : null
                 }));
                 await prisma.class.createMany({ data: classesToCreate });
                 return res.status(201).json({ message: 'Classes created for all branches', data: classesToCreate });
@@ -2079,7 +2113,8 @@ const createClass = async (req, res) => {
                 maxCapacity: parseInt(maxCapacity),
                 status: status || 'Scheduled',
                 duration: duration ? String(duration) : '60',
-                requiredBenefit: finalType
+                requiredBenefit: finalType,
+                price: price ? parseFloat(price) : null
             }
         });
         res.status(201).json(newClass);
@@ -2091,7 +2126,7 @@ const createClass = async (req, res) => {
 const updateClass = async (req, res) => {
     try {
         const { id } = req.params;
-        const { name, description, trainerId, schedule, date, time, type, maxCapacity, status, duration, requiredBenefit } = req.body;
+        const { name, description, trainerId, schedule, date, time, type, maxCapacity, status, duration, requiredBenefit, price } = req.body;
 
         let finalSchedule = schedule || undefined;
         if (date && time) {
@@ -2109,7 +2144,8 @@ const updateClass = async (req, res) => {
                 maxCapacity: maxCapacity ? parseInt(maxCapacity) : undefined,
                 status,
                 duration: duration ? String(duration) : undefined,
-                requiredBenefit: type || requiredBenefit
+                requiredBenefit: type || requiredBenefit,
+                price: price !== undefined ? parseFloat(price) : undefined
             }
         });
         res.json(updated);
@@ -2778,6 +2814,19 @@ const renewMembership = async (req, res) => {
             });
         }
 
+        // Log the renewal
+        await prisma.auditLog.create({
+            data: {
+                userId: req.user.id,
+                action: 'Membership Renewal',
+                module: 'Membership',
+                affectedEntity: `Member ID: ${memberId}`,
+                details: `Plan ${plan.name} renewed for ${updatedMember.name}. Amount: ₹${finalPrice}`,
+                ip: req.ip || '0.0.0.0',
+                status: 'Success'
+            }
+        });
+
         res.json({ message: 'Membership renewed successfully', member: updatedMember });
     } catch (error) {
         console.error("Renewal Error:", error);
@@ -2942,7 +2991,13 @@ const getTrainerStats = async (req, res) => {
 
 const getNotificationSettings = async (req, res) => {
     try {
-        const { tenantId } = req.user;
+        const headerTenantId = req.headers['x-tenant-id'];
+        const tenantId = (req.user.role === 'SUPER_ADMIN' && headerTenantId) 
+            ? parseInt(headerTenantId) 
+            : req.user.tenantId;
+
+        if (!tenantId) return res.status(400).json({ message: 'Tenant ID is required' });
+
         let settings = await prisma.tenantSettings.findUnique({
             where: { tenantId }
         });
@@ -2961,7 +3016,13 @@ const getNotificationSettings = async (req, res) => {
 
 const updateNotificationSettings = async (req, res) => {
     try {
-        const { tenantId } = req.user;
+        const headerTenantId = req.headers['x-tenant-id'];
+        const tenantId = (req.user.role === 'SUPER_ADMIN' && headerTenantId) 
+            ? parseInt(headerTenantId) 
+            : req.user.tenantId;
+
+        if (!tenantId) return res.status(400).json({ message: 'Tenant ID is required' });
+
         const updateData = req.body;
 
         const settings = await prisma.tenantSettings.upsert({
@@ -3014,7 +3075,13 @@ const updateSecuritySettings = async (req, res) => {
 
 const runReminders = async (req, res) => {
     try {
-        const { tenantId } = req.user;
+        const headerTenantId = req.headers['x-tenant-id'];
+        const tenantId = (req.user.role === 'SUPER_ADMIN' && headerTenantId) 
+            ? parseInt(headerTenantId) 
+            : req.user.tenantId;
+
+        if (!tenantId) return res.status(400).json({ message: 'Tenant ID is required' });
+
         const { type } = req.body;
 
         // Exact logic: Simulation of background job
@@ -3367,5 +3434,8 @@ module.exports = {
     getTrainerStats,
     getSystemHealth,
     downloadAttendanceQrCode,
-    getAttendanceQrPreview
+    getAttendanceQrPreview,
+    runReminders,
+    getNotificationSettings,
+    updateNotificationSettings
 };

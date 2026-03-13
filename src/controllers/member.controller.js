@@ -215,14 +215,46 @@ const createBooking = async (req, res) => {
             }
         }
 
-        const booking = await prisma.booking.create({
-            data: {
-                memberId: member.id,
-                classId: parseInt(classId),
-                date: new Date(date),
-                status: 'Upcoming'
+        const price = targetClass.price ? parseFloat(targetClass.price) : 0;
+        const status = price > 0 ? 'Pending Payment' : 'Upcoming';
+
+        const booking = await prisma.$transaction(async (tx) => {
+            const newBooking = await tx.booking.create({
+                data: {
+                    memberId: member.id,
+                    classId: parseInt(classId),
+                    date: new Date(date),
+                    status: status
+                }
+            });
+
+            let invoice = null;
+            if (price > 0) {
+                invoice = await tx.invoice.create({
+                    data: {
+                        tenantId: member.tenantId,
+                        memberId: member.id,
+                        bookingId: newBooking.id,
+                        invoiceNumber: `BK-${Date.now()}-${newBooking.id}`,
+                        amount: price,
+                        subtotal: price,
+                        status: 'Unpaid',
+                        dueDate: new Date(),
+                        items: {
+                            create: [{
+                                description: `Booking for ${targetClass.name} on ${new Date(date).toLocaleDateString()}`,
+                                quantity: 1,
+                                rate: price,
+                                amount: price
+                            }]
+                        }
+                    }
+                });
             }
+
+            return { ...newBooking, invoice };
         });
+
         res.json(booking);
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -319,6 +351,7 @@ const getInvoices = async (req, res) => {
                 date: inv.dueDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
                 amount: parseFloat(inv.amount),
                 status: inv.status,
+                bookingId: inv.bookingId,
                 dueDate: inv.dueDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
             }));
             return res.json(mapped);
@@ -330,6 +363,7 @@ const getInvoices = async (req, res) => {
             date: inv.dueDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
             amount: parseFloat(inv.amount),
             status: inv.status,
+            bookingId: inv.bookingId,
             dueDate: inv.dueDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
         }));
 
@@ -346,12 +380,45 @@ const payInvoice = async (req, res) => {
         const member = memberRaw[0];
         if (!member) return res.status(404).json({ message: 'Member profile not found' });
 
-        await prisma.invoice.updateMany({
-            where: { id: parseInt(id), memberId: member.id, tenantId: member.tenantId },
-            data: { status: 'Paid', paidDate: new Date() }
+        await prisma.$transaction(async (tx) => {
+            const invoice = await tx.invoice.findFirst({
+                where: { id: parseInt(id), memberId: member.id, tenantId: member.tenantId }
+            });
+
+            if (!invoice) throw new Error('Invoice not found');
+
+            await tx.invoice.update({
+                where: { id: invoice.id },
+                data: { status: 'Paid', paidDate: new Date() }
+            });
+
+            if (invoice.bookingId) {
+                await tx.booking.update({
+                    where: { id: invoice.bookingId },
+                    data: { status: 'Upcoming' }
+                });
+            }
         });
 
         res.json({ message: 'Invoice paid successfully' });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const failPayment = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const memberRaw = await prisma.$queryRaw`SELECT * FROM member WHERE userId = ${req.user.id}`;
+        const member = memberRaw[0];
+        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+
+        await prisma.invoice.update({
+            where: { id: parseInt(id), memberId: member.id },
+            data: { status: 'Unpaid' }
+        });
+
+        res.json({ message: 'Transaction Failed', status: 'Unpaid' });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -1318,6 +1385,7 @@ module.exports = {
     unfreezeMembership,
     getInvoices,
     payInvoice,
+    failPayment,
     getWalletBalance,
     getSavedCards,
     addSavedCard,
