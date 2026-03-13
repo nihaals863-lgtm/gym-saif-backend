@@ -1513,6 +1513,45 @@ const getMemberCheckInStatus = async (req, res) => {
     }
 };
 
+const requestDietPlan = async (req, res) => {
+    try {
+        const member = await prisma.member.findUnique({
+            where: { userId: req.user.id }
+        });
+
+        if (!member) {
+            return res.status(404).json({ message: 'Member not found' });
+        }
+
+        // Check if there's already a pending diet plan request
+        const existingRequest = await prisma.serviceRequest.findFirst({
+            where: {
+                memberId: member.id,
+                type: 'Diet Plan Request',
+                status: 'Pending'
+            }
+        });
+
+        if (existingRequest) {
+            return res.status(400).json({ message: 'You already have a pending diet plan request.' });
+        }
+
+        const request = await prisma.serviceRequest.create({
+            data: {
+                tenantId: member.tenantId,
+                memberId: member.id,
+                type: 'Diet Plan Request',
+                details: 'Member requested a new personalized diet plan.',
+                status: 'Pending'
+            }
+        });
+
+        res.json({ success: true, message: 'Diet plan requested successfully', request });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
 module.exports = {
     upgradePlan,
     cancelMembership,
@@ -1549,5 +1588,6 @@ module.exports = {
     memberCheckOut,
     getMemberCheckInStatus,
     getPTAccounts,
-    createPTBooking
+    createPTBooking,
+    requestDietPlan
 };

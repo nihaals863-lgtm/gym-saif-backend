@@ -182,11 +182,25 @@ const getAssignedMembers = async (req, res) => {
 
         const mapped = await Promise.all(members.map(async m => {
             // Fetch active workout plan name
-            const activePlan = await prisma.workoutPlan.findFirst({
+            const activeWorkout = await prisma.workoutPlan.findFirst({
                 where: { clientId: m.id, status: 'Active' },
                 select: { name: true },
                 orderBy: { createdAt: 'desc' }
             });
+
+            // Fetch active diet plan
+            const activeDiet = await prisma.dietPlan.findFirst({
+                where: { clientId: m.id, status: 'Active' },
+                select: { name: true },
+                orderBy: { createdAt: 'desc' }
+            });
+
+            // Combine for assignedProtocol display
+            let protocols = [];
+            if (activeWorkout) protocols.push(`Workout: ${activeWorkout.name}`);
+            if (activeDiet) protocols.push(`Diet: ${activeDiet.name}`);
+            
+            const assignedProtocol = protocols.length > 0 ? protocols.join(' | ') : 'None';
 
             // Check recent attendance or bookings for 'lastSession'
             const lastAttendance = m.attendances && m.attendances.length > 0 ? m.attendances[0] : null;
@@ -202,7 +216,7 @@ const getAssignedMembers = async (req, res) => {
                 memberId: m.memberId,
                 name: m.name,
                 plan: m.plan?.name || 'N/A',
-                assignedProtocol: activePlan ? activePlan.name : 'None',
+                assignedProtocol: assignedProtocol,
                 status: m.status,
                 attendance: lastAttendance ? `${new Date(lastAttendance.date).toLocaleDateString()}` : 'N/A',
                 lastSession: lastAttendance ? 'Recent' : (m.bookings?.length > 0 ? 'Upcoming' : 'None'),
