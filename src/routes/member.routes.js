@@ -33,7 +33,9 @@ const {
     getMemberAttendance,
     memberCheckIn,
     memberCheckOut,
-    getMemberCheckInStatus
+    getMemberCheckInStatus,
+    getPTAccounts,
+    createPTBooking
 } = require('../controllers/member.controller');
 const {
     getProgress,
@@ -59,6 +61,8 @@ router.post('/plan/cancel', memberOnly, cancelMembership);
 router.post('/membership/freeze', memberOnly, freezeMembership);
 router.post('/membership/unfreeze', memberOnly, unfreezeMembership);
 router.get('/membership-details', memberOnly, getMembershipDetails);
+router.get('/pt-accounts', memberOnly, getPTAccounts);
+router.post('/pt-sessions', memberOnly, createPTBooking);
 router.get('/service-requests', memberOnly, getServiceRequests);
 router.post('/service-requests', memberOnly, addServiceRequest);
 router.get('/profile', memberOnly, getMemberProfile);

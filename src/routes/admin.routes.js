@@ -53,6 +53,7 @@ const {
     createClass,
     updateClass,
     deleteClass,
+    saveClassAttendance,
     getAnnouncements,
     createAnnouncement,
     getChats,
@@ -167,6 +168,7 @@ router.get('/classes/:id', getClassById);
 router.post('/classes', createClass);
 router.patch('/classes/:id', updateClass);
 router.delete('/classes/:id', deleteClass);
+router.post('/classes/:id/attendance', saveClassAttendance);
 
 // Communication
 router.get('/communication/announcements', getAnnouncements);

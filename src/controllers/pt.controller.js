@@ -132,7 +132,7 @@ const deletePackage = async (req, res) => {
 const purchasePackage = async (req, res) => {
     try {
         const { tenantId } = req.user;
-        const { memberId, packageId } = req.body;
+        const { memberId, packageId, trainerId } = req.body;
 
         const pkg = await prisma.pTPackage.findUnique({ where: { id: parseInt(packageId) } });
         if (!pkg) return res.status(404).json({ message: 'Package not found' });
@@ -148,12 +148,44 @@ const purchasePackage = async (req, res) => {
                 totalSessions: pkg.totalSessions,
                 remainingSessions: pkg.totalSessions,
                 expiryDate,
-                status: 'Active'
+                status: 'Pending Payment' // Updated: Change from 'Active' to 'Pending Payment'
+            }
+        });
+
+        // Assign trainer to member if provided
+        if (trainerId) {
+            await prisma.member.update({
+                where: { id: parseInt(memberId) },
+                data: { trainerId: parseInt(trainerId) }
+            });
+        }
+
+        // Generate Invoice for the PT Package
+        await prisma.invoice.create({
+            data: {
+                tenantId: pkg.tenantId,
+                invoiceNumber: `PTINV-${Date.now()}-${pkg.tenantId}`,
+                memberId: parseInt(memberId),
+                amount: pkg.price,
+                subtotal: pkg.price,
+                paymentMode: 'Cash', // Default
+                status: 'Unpaid',
+                dueDate: new Date(),
+                notes: `Personal Training Package: ${pkg.name}`,
+                items: {
+                    create: [{
+                        description: `PT Package: ${pkg.name}`,
+                        quantity: 1,
+                        rate: pkg.price,
+                        amount: pkg.price
+                    }]
+                }
             }
         });
 
         res.status(201).json(account);
     } catch (error) {
+        console.error('Purchase PT Package Error:', error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -163,7 +195,9 @@ const getActiveAccounts = async (req, res) => {
         const { tenantId, role, email, name: userName } = req.user;
         const { branchId } = req.query;
 
-        let where = { status: 'Active' };
+        let where = {
+            status: { in: ['Active', 'Pending Payment'] }
+        };
         if (role === 'SUPER_ADMIN') {
             if (branchId && branchId !== 'all') {
                 where.tenantId = parseInt(branchId);
@@ -207,6 +241,21 @@ const logSession = async (req, res) => {
         const { tenantId: userTenantId } = req.user;
         const { memberId, trainerId, ptAccountId, date, time, duration, notes } = req.body;
 
+        // 1. Conflict Check: Ensure trainer is not already booked at the same date and time
+        const conflict = await prisma.pTSession.findFirst({
+            where: {
+                trainerId: parseInt(trainerId),
+                date: new Date(date),
+                time: time,
+                status: { in: ['Scheduled', 'In Progress'] }
+            }
+        });
+
+        if (conflict) {
+            return res.status(409).json({ message: 'This trainer is already booked for the selected time slot.' });
+        }
+
+        // 2. Proceed with creation
         // Try to get tenantId from account first to ensure consistency
         let effectiveTenantId = userTenantId;
         if (ptAccountId) {
@@ -229,27 +278,56 @@ const logSession = async (req, res) => {
                 time,
                 duration: parseInt(duration || 60),
                 notes,
-                status: 'Completed'
+                status: 'Scheduled' // Updated: Change from 'Completed' to 'Scheduled'
             }
         });
 
-        // If linked to an account, decrement sessions
-        if (ptAccountId) {
-            const account = await prisma.pTMemberAccount.findUnique({ where: { id: parseInt(ptAccountId) } });
-            if (account && account.remainingSessions > 0) {
-                await prisma.pTMemberAccount.update({
-                    where: { id: account.id },
-                    data: {
-                        remainingSessions: account.remainingSessions - 1,
-                        status: account.remainingSessions - 1 === 0 ? 'Completed' : 'Active'
-                    }
-                });
-            }
-        }
+        // Deduct logic moved to updateSessionStatus controller
 
         res.status(201).json(session);
     } catch (error) {
         console.error('Log Session Error:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const updateSessionStatus = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { status } = req.body;
+
+        const session = await prisma.pTSession.findUnique({
+            where: { id: parseInt(id) },
+            include: { ptAccount: true }
+        });
+
+        if (!session) return res.status(404).json({ message: 'Session not found' });
+
+        // If status is being updated to 'Completed', and it wasn't already completed, deduct session
+        if (status === 'Completed' && session.status !== 'Completed') {
+            if (session.ptAccountId && session.ptAccount) {
+                if (session.ptAccount.remainingSessions > 0) {
+                    await prisma.pTMemberAccount.update({
+                        where: { id: session.ptAccountId },
+                        data: {
+                            remainingSessions: session.ptAccount.remainingSessions - 1,
+                            status: session.ptAccount.remainingSessions - 1 === 0 ? 'Completed' : 'Active'
+                        }
+                    });
+                } else {
+                    return res.status(400).json({ message: 'No sessions remaining in this account' });
+                }
+            }
+        }
+
+        const updatedSession = await prisma.pTSession.update({
+            where: { id: parseInt(id) },
+            data: { status }
+        });
+
+        res.json(updatedSession);
+    } catch (error) {
+        console.error('Update PT Session Status Error:', error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -360,6 +438,28 @@ const getPTStats = async (req, res) => {
         res.status(500).json({ message: error.message });
     }
 };
+ 
+const getTrainerBookedSlots = async (req, res) => {
+    try {
+        const { trainerId, date } = req.query;
+        if (!trainerId || !date) {
+            return res.status(400).json({ message: 'trainerId and date are required' });
+        }
+ 
+        const sessions = await prisma.pTSession.findMany({
+            where: {
+                trainerId: parseInt(trainerId),
+                date: new Date(date),
+                status: { in: ['Scheduled', 'In Progress'] }
+            },
+            select: { time: true }
+        });
+ 
+        res.json(sessions.map(s => s.time));
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
 
 module.exports = {
     createPackage,
@@ -369,6 +469,8 @@ module.exports = {
     purchasePackage,
     getActiveAccounts,
     logSession,
+    updateSessionStatus,
     getSessions,
-    getPTStats
+    getPTStats,
+    getTrainerBookedSlots
 };

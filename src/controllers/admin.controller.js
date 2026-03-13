@@ -666,7 +666,7 @@ const createStaff = async (req, res) => {
             joiningDate, status, baseSalary, commission, accountNumber, ifsc,
             trainerConfig, salesConfig, managerConfig, documents,
             idType, idNumber, specialization, certifications, salaryType, hourlyRate, ptSharePercent, bio,
-            position, bankName, taxId
+            position, bankName, taxId, avatar
         } = req.body;
 
         console.log(`[createStaff] Received payload:`, {
@@ -678,6 +678,19 @@ const createStaff = async (req, res) => {
         if (role === 'Trainer') config = trainerConfig;
         if (role === 'Sales') config = salesConfig;
         if (role === 'Manager') config = managerConfig;
+ 
+        let avatarUrl = avatar || null;
+        if (avatar && avatar.startsWith('data:image')) {
+            try {
+                const uploadResponse = await cloudinary.uploader.upload(avatar, {
+                    folder: 'gym/staff',
+                    resource_type: 'image'
+                });
+                avatarUrl = uploadResponse.secure_url;
+            } catch (uploadError) {
+                console.error('Cloudinary upload failure:', uploadError);
+            }
+        }
 
         // Hash default password for staff (e.g. 123456)
         const bcrypt = require('bcryptjs');
@@ -737,7 +750,8 @@ const createStaff = async (req, res) => {
                                 bankName,
                                 taxId
                             }),
-                            documents: documents ? JSON.stringify(documents) : null
+                            documents: documents ? JSON.stringify(documents) : null,
+                            avatar: avatarUrl
                         }
                     });
                 } catch (e) {
@@ -778,6 +792,7 @@ const createStaff = async (req, res) => {
                     taxId
                 }),
                 documents: documents ? JSON.stringify(documents) : null,
+                avatar: avatarUrl
             }
         });
 
@@ -2218,6 +2233,37 @@ const deleteClass = async (req, res) => {
     }
 };
 
+const saveClassAttendance = async (req, res) => {
+    try {
+        const { id } = req.params; // Class ID
+        const { attendanceData } = req.body; // Array of { memberId, status }
+
+        if (!Array.isArray(attendanceData)) {
+            return res.status(400).json({ message: 'Attendance data must be an array' });
+        }
+
+        // Use transaction to update all booking statuses
+        await prisma.$transaction(
+            attendanceData.map(item =>
+                prisma.booking.updateMany({
+                    where: {
+                        classId: parseInt(id),
+                        memberId: parseInt(item.memberId)
+                    },
+                    data: {
+                        status: item.status // "Present", "Absent", "Late", etc.
+                    }
+                })
+            )
+        );
+
+        res.json({ success: true, message: 'Class attendance saved successfully' });
+    } catch (error) {
+        console.error('saveClassAttendance Error:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
 // --- COMMUNICATION ---
 
 const getAnnouncements = async (req, res) => {
@@ -3367,5 +3413,6 @@ module.exports = {
     getTrainerStats,
     getSystemHealth,
     downloadAttendanceQrCode,
-    getAttendanceQrPreview
+    getAttendanceQrPreview,
+    saveClassAttendance
 };

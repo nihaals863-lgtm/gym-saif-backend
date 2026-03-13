@@ -351,25 +351,56 @@ const flagMember = async (req, res) => {
 
 const getSessions = async (req, res) => {
     try {
-        // Find classes and bookings taught by this trainer
+        const { id, tenantId } = req.user;
+
+        // Find group classes taught by this trainer
         const classes = await prisma.class.findMany({
-            where: { trainerId: req.user.id, tenantId: req.user.tenantId }
+            where: { trainerId: id, tenantId: tenantId }
         });
 
-        const mappedSessions = classes.map(c => ({
-            id: c.id,
+        // Find individual PT sessions for this trainer
+        const ptSessions = await prisma.pTSession.findMany({
+            where: { trainerId: id, tenantId: tenantId },
+            include: { member: { select: { name: true } } }
+        });
+
+        const mappedClasses = classes.map(c => ({
+            id: `class-${c.id}`,
+            internalId: c.id,
             title: c.name,
             time: c.schedule?.time || 'TBD',
             date: c.schedule?.date || new Date().toISOString().split('T')[0],
-            type: c.description || 'Group Class',
+            type: 'Group Class',
+            category: c.description || 'Group Class',
             location: c.location || 'Studio',
-            members: 0, // Need to count active bookings
+            members: 0, 
             maxMembers: c.maxCapacity,
             status: c.status
         }));
 
-        res.json(mappedSessions);
+        const mappedPTSessions = ptSessions.map(s => ({
+            id: `pt-${s.id}`,
+            internalId: s.id,
+            title: `PT: ${s.member?.name || 'Member'}`,
+            time: s.time || 'TBD',
+            date: s.date.toISOString().split('T')[0],
+            type: 'Personal Training',
+            category: 'Personal Training',
+            location: 'Gym Floor',
+            members: 1,
+            maxMembers: 1,
+            status: s.status
+        }));
+
+        const allSessions = [...mappedClasses, ...mappedPTSessions].sort((a, b) => {
+            const dateA = new Date(`${a.date} ${a.time === 'TBD' ? '00:00' : a.time}`);
+            const dateB = new Date(`${b.date} ${b.time === 'TBD' ? '00:00' : b.time}`);
+            return dateA - dateB;
+        });
+
+        res.json(allSessions);
     } catch (error) {
+        console.error('getSessions error:', error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -454,11 +485,31 @@ const updateTaskStatus = async (req, res) => {
 
 const saveAttendance = async (req, res) => {
     try {
-        const { id } = req.params; // Session ID
-        const attendanceData = req.body;
-        // Mock save for now since complex session attendance schemas are custom
-        res.json({ success: true, message: 'Attendance saved' });
+        const { id } = req.params; // Class/Session ID
+        const { attendanceData } = req.body; // Array of { memberId, status }
+
+        if (!Array.isArray(attendanceData)) {
+            return res.status(400).json({ message: 'Attendance data must be an array' });
+        }
+
+        // Use transaction to update all booking statuses for this class
+        await prisma.$transaction(
+            attendanceData.map(item =>
+                prisma.booking.updateMany({
+                    where: {
+                        classId: parseInt(id),
+                        memberId: parseInt(item.memberId)
+                    },
+                    data: {
+                        status: item.status // "Present", "Absent", "Late", etc.
+                    }
+                })
+            )
+        );
+
+        res.json({ success: true, message: 'Class attendance saved successfully' });
     } catch (error) {
+        console.error('Trainer saveAttendance Error:', error);
         res.status(500).json({ message: error.message });
     }
 };

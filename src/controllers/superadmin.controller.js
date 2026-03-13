@@ -1,6 +1,7 @@
 // gym_backend/src/controllers/superadmin.controller.js
 const prisma = require('../config/prisma');
 const bcrypt = require('bcryptjs');
+const cloudinary = require('../utils/cloudinary');
 const { logWebhook } = require('../utils/webhookLogger');
 
 // --- GYM MANAGEMENT ---
@@ -1108,6 +1109,7 @@ const addStaffMember = async (req, res) => {
         const {
             role = 'STAFF', branch,
             joiningDate, baseSalary, commission,
+            avatar,
             ...restUserData
         } = req.body;
         let tenantId = req.user.tenantId;
@@ -1121,6 +1123,19 @@ const addStaffMember = async (req, res) => {
                 if (altTenant) tenantId = altTenant.id;
             }
         }
+ 
+        let avatarUrl = avatar || null;
+        if (avatar && avatar.startsWith('data:image')) {
+            try {
+                const uploadResponse = await cloudinary.uploader.upload(avatar, {
+                    folder: 'gym/staff',
+                    resource_type: 'image'
+                });
+                avatarUrl = uploadResponse.secure_url;
+            } catch (uploadError) {
+                console.error('Cloudinary upload failure:', uploadError);
+            }
+        }
 
         const bcrypt = require('bcryptjs');
         const hashedPassword = await bcrypt.hash(restUserData.password || '123456', 10);
@@ -1132,6 +1147,7 @@ const addStaffMember = async (req, res) => {
                 ...safeUserData,
                 password: hashedPassword,
                 role,
+                avatar: avatarUrl,
                 tenantId: tenantId || null,
                 joinedDate: joiningDate ? new Date(joiningDate) : new Date(),
                 baseSalary: (baseSalary !== undefined && baseSalary !== null && baseSalary !== '') ? parseFloat(baseSalary) : null,
@@ -1173,12 +1189,25 @@ const updateStaffMember = async (req, res) => {
             joiningDate, status, baseSalary, commission, accountNumber, ifsc,
             trainerConfig, salesConfig, managerConfig, documents,
             idType, idNumber, specialization, certifications, salaryType, hourlyRate, ptSharePercent, bio,
-            position, bankName, taxId, tenantId
+            position, bankName, taxId, tenantId, avatar
         } = req.body;
 
         console.log(`[updateStaffMember] Received update for ID ${id}:`, {
             position, commission, bankName, taxId, ifsc, accountNumber, role
         });
+ 
+        let avatarUrl = avatar;
+        if (avatar && avatar.startsWith('data:image')) {
+            try {
+                const uploadResponse = await cloudinary.uploader.upload(avatar, {
+                    folder: 'gym/staff',
+                    resource_type: 'image'
+                });
+                avatarUrl = uploadResponse.secure_url;
+            } catch (uploadError) {
+                console.error('Cloudinary upload failure:', uploadError);
+            }
+        }
 
         const existingUser = await prisma.user.findUnique({ where: { id: parseInt(id) } });
         if (!existingUser) return res.status(404).json({ message: 'User not found' });
@@ -1194,6 +1223,7 @@ const updateStaffMember = async (req, res) => {
         if (accountNumber !== undefined) updateData.accountNumber = accountNumber;
         if (ifsc !== undefined) updateData.ifsc = ifsc;
         if (documents !== undefined) updateData.documents = documents ? JSON.stringify(documents) : null;
+        if (avatarUrl !== undefined) updateData.avatar = avatarUrl;
 
         if (joiningDate) {
             updateData.joinedDate = new Date(joiningDate);

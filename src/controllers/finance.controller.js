@@ -126,7 +126,7 @@ const getInvoices = async (req, res) => {
             prisma.invoice.findMany({
                 where: listWhere,
                 include: { member: true, items: true, tenant: { select: { name: true } } },
-                orderBy: { dueDate: 'desc' }
+                orderBy: { createdAt: 'desc' }
             }),
             prisma.invoice.findMany({
                 where: branchWhere,
@@ -163,7 +163,11 @@ const getInvoices = async (req, res) => {
             paymentMode: order.paymentMode
         }));
 
-        const combinedInvoices = [...invoices, ...mappedPOS].sort((a, b) => new Date(b.dueDate) - new Date(a.dueDate));
+        const combinedInvoices = [...invoices, ...mappedPOS].sort((a, b) => {
+            const dateB = b.createdAt || b.date || b.dueDate;
+            const dateA = a.createdAt || a.date || a.dueDate;
+            return new Date(dateB) - new Date(dateA);
+        });
 
         const uniqueInvoicingClients = new Set(allInvoices.filter(i => i.memberId).map(i => i.memberId));
         const uniqueStoreClients = new Set(allStoreOrders.filter(o => o.memberId).map(o => o.memberId));
@@ -357,6 +361,19 @@ const settleInvoice = async (req, res) => {
                 notes: updatedNotes
             }
         });
+
+        // Activation logic: If this member has a PT account in 'Pending Payment' status, activate it
+        if (updatedInvoice.memberId) {
+            await prisma.pTMemberAccount.updateMany({
+                where: {
+                    memberId: updatedInvoice.memberId,
+                    status: 'Pending Payment'
+                },
+                data: {
+                    status: 'Active'
+                }
+            });
+        }
 
         res.json({
             message: 'Invoice settled successfully',
@@ -596,7 +613,7 @@ const getFinanceStats = async (req, res) => {
             prisma.invoice.findMany({
                 where,
                 include: { member: true, tenant: { select: { name: true } } },
-                orderBy: { dueDate: 'desc' }
+                orderBy: { createdAt: 'desc' }
             }),
             prisma.expense.findMany({
                 where,

@@ -487,6 +487,8 @@ model Invoice {
   paidDate      DateTime?
   paymentMode   String        @default("Cash")
   notes         String?       @db.Text
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @default(now()) @updatedAt
   items         InvoiceItem[]
   member        Member?       @relation(fields: [memberId], references: [id])
   tenant        Tenant        @relation(fields: [tenantId], references: [id])
@@ -504,6 +506,8 @@ model InvoiceItem {
   quantity    Int
   rate        Decimal @db.Decimal(10, 2)
   amount      Decimal @db.Decimal(10, 2)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @default(now()) @updatedAt
   invoice     Invoice @relation(fields: [invoiceId], references: [id])
 
   @@index([invoiceId], map: "invoiceitem_invoiceId_fkey")

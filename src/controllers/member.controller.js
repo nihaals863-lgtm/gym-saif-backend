@@ -92,11 +92,18 @@ const getMyBookings = async (req, res) => {
         const member = await prisma.member.findUnique({ where: { userId: req.user.id } });
         if (!member) return res.status(404).json({ message: 'Member profile not found' });
 
-        const bookings = await prisma.booking.findMany({
-            where: { memberId: member.id },
-            include: { class: { include: { trainer: true } } },
-            orderBy: { date: 'desc' }
-        });
+        const [bookings, ptSessions] = await Promise.all([
+            prisma.booking.findMany({
+                where: { memberId: member.id },
+                include: { class: { include: { trainer: true } } },
+                orderBy: { date: 'desc' }
+            }),
+            prisma.pTSession.findMany({
+                where: { memberId: member.id },
+                include: { trainer: true, ptAccount: { include: { package: true } } },
+                orderBy: { date: 'desc' }
+            })
+        ]);
 
         const processedBookings = bookings.map(b => {
             let startTime = null;
@@ -105,7 +112,6 @@ const getMyBookings = async (req, res) => {
                 try {
                     const sched = JSON.parse(b.class.schedule);
                     startTime = sched.time || null;
-                    // If range like "09:00 AM - 10:00 AM", split it
                     if (startTime && startTime.includes('-')) {
                         const parts = startTime.split('-');
                         startTime = parts[0].trim();
@@ -115,6 +121,7 @@ const getMyBookings = async (req, res) => {
             }
             return {
                 ...b,
+                type: 'Class',
                 class: {
                     ...b.class,
                     startTime: startTime || b.class.startTime,
@@ -123,7 +130,75 @@ const getMyBookings = async (req, res) => {
             };
         });
 
-        res.json(processedBookings);
+        const formattedPTSessions = ptSessions.map(pt => ({
+            id: `pt-${pt.id}`, // prefix to avoid key collisions on frontend if necessary
+            originalId: pt.id,
+            memberId: pt.memberId,
+            date: pt.date,
+            status: pt.status,
+            type: 'PT',
+            class: {
+                name: pt.ptAccount?.package?.name || 'Personal Training',
+                type: 'PT Session',
+                startTime: pt.time,
+                endTime: null, // Depending on duration, could be calculated
+                trainer: pt.trainer
+            }
+        }));
+
+        const combinedBookings = [...processedBookings, ...formattedPTSessions].sort((a, b) => new Date(b.date) - new Date(a.date));
+
+        res.json(combinedBookings);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const createPTBooking = async (req, res) => {
+    try {
+        const { ptAccountId, date, time, duration, notes } = req.body;
+        const member = await prisma.member.findUnique({
+            where: { userId: req.user.id }
+        });
+        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+
+        const ptAccount = await prisma.pTMemberAccount.findUnique({
+            where: { id: parseInt(ptAccountId) },
+            include: { package: true }
+        });
+
+        if (!ptAccount || ptAccount.memberId !== member.id) {
+            return res.status(403).json({ message: 'Unauthorized or invalid PT package' });
+        }
+
+        if (ptAccount.status !== 'Active') {
+            return res.status(400).json({ message: 'This PT package is not active yet. Please complete payment.' });
+        }
+
+        if (ptAccount.package?.sessionType === 'Fixed Sessions' && ptAccount.remainingSessions <= 0) {
+            return res.status(400).json({ message: 'No remaining sessions in this package.' });
+        }
+        
+        // Ensure a trainer is assigned
+        if (!member.trainerId) {
+            return res.status(400).json({ message: 'No trainer assigned to your profile.' });
+        }
+
+        const session = await prisma.pTSession.create({
+            data: {
+                tenantId: ptAccount.tenantId,
+                memberId: member.id,
+                trainerId: member.trainerId,
+                ptAccountId: ptAccount.id,
+                date: new Date(date),
+                time,
+                duration: parseInt(duration || 60),
+                notes: notes || 'Booked by member',
+                status: 'Scheduled'
+            }
+        });
+
+        res.status(201).json(session);
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -483,6 +558,48 @@ const getMembershipDetails = async (req, res) => {
             price: member.plan?.price || 0
         };
         res.json(details);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const getPTAccounts = async (req, res) => {
+    try {
+        const member = await prisma.member.findUnique({
+            where: { userId: req.user.id }
+        });
+
+        if (!member) {
+            return res.status(404).json({ message: 'Member profile not found' });
+        }
+
+        const ptAccounts = await prisma.pTMemberAccount.findMany({
+            where: {
+                memberId: member.id,
+                status: { in: ['Active', 'Pending Payment'] }
+            },
+            include: {
+                package: true,
+                member: {
+                    select: {
+                        trainer: {
+                            select: {
+                                name: true
+                            }
+                        }
+                    }
+                }
+            },
+            orderBy: { createdAt: 'desc' }
+        });
+
+        // Format response to match expected UI structure
+        const formattedAccounts = ptAccounts.map(account => ({
+            ...account,
+            trainer: account.member?.trainer || null
+        }));
+
+        res.json(formattedAccounts);
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -1338,5 +1455,7 @@ module.exports = {
     getMemberAttendance,
     memberCheckIn,
     memberCheckOut,
-    getMemberCheckInStatus
+    getMemberCheckInStatus,
+    getPTAccounts,
+    createPTBooking
 };
