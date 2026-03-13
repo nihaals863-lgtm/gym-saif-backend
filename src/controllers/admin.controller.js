@@ -3481,11 +3481,8 @@ module.exports = {
     getSystemHealth,
     downloadAttendanceQrCode,
     getAttendanceQrPreview,
-<<<<<<< HEAD
-    saveClassAttendance
-=======
+    saveClassAttendance,
     runReminders,
     getNotificationSettings,
     updateNotificationSettings
->>>>>>> 5a23b7d07f57b5203c1416af326eca8424dfd922
 };
