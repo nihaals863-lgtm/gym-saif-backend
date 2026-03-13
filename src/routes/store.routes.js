@@ -1,7 +1,8 @@
 const express = require('express');
 const {
     getProducts, checkout, getOrders, getOrderById, updateStock, addProduct, updateProduct, deleteProduct,
-    getCoupons, createCoupon, updateCoupon, deleteCoupon, getCouponStats,
+    getCoupons, createCoupon, updateCoupon, deleteCoupon, getCouponStats, validateCoupon, getAvailableCoupons,
+    getAvailableCouponsForMember,
     getCategories, createCategory, updateCategory, deleteCategory, getStoreStats
 } = require('../controllers/store.controller');
 const { protect, authorize } = require('../middleware/auth.middleware');
@@ -27,6 +28,8 @@ router.get('/orders/:id', getOrderById);
 router.post('/checkout', checkout);
 
 // Coupons
+router.get('/coupons/available', getAvailableCoupons);
+router.get('/coupons/validate/:code', validateCoupon);
 router.get('/coupons', getCoupons);
 router.get('/coupons/stats', adminStaffOnly, getCouponStats);
 router.post('/coupons', adminStaffOnly, createCoupon);
@@ -38,5 +41,8 @@ router.get('/categories', getCategories);
 router.post('/categories', adminStaffOnly, createCategory);
 router.put('/categories/:id', adminStaffOnly, updateCategory);
 router.delete('/categories/:id', adminStaffOnly, deleteCategory);
+
+// Member-specific coupons for POS
+router.get('/coupons/available/:memberId', getAvailableCouponsForMember);
 
 module.exports = router;

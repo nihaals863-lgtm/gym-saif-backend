@@ -2016,9 +2016,12 @@ const deletePlan = async (req, res) => {
 
 const getAllClasses = async (req, res) => {
     try {
-        const { branchId } = req.query;
+        const { branchId, type } = req.query;
         const { tenantId: userTenantId, role, email, name: userName } = req.user;
         let where = {};
+        if (type) {
+            where.type = type;
+        }
 
         if (role === 'SUPER_ADMIN') {
             if (branchId && branchId !== 'all') {
@@ -2142,6 +2145,7 @@ const createClass = async (req, res) => {
                     status: status || 'Scheduled',
                     duration: duration ? String(duration) : '60',
                     requiredBenefit: finalType,
+                    type: type === 'Recovery' ? 'Recovery' : 'Workout',
                     price: price ? parseFloat(price) : null
                 }));
                 await prisma.class.createMany({ data: classesToCreate });
@@ -2163,6 +2167,7 @@ const createClass = async (req, res) => {
                 status: status || 'Scheduled',
                 duration: duration ? String(duration) : '60',
                 requiredBenefit: finalType,
+                type: type === 'Recovery' ? 'Recovery' : 'Workout',
                 price: price ? parseFloat(price) : null
             }
         });
@@ -2194,6 +2199,7 @@ const updateClass = async (req, res) => {
                 status,
                 duration: duration ? String(duration) : undefined,
                 requiredBenefit: type || requiredBenefit,
+                type: type === 'Recovery' ? 'Recovery' : (type === 'Workout' ? 'Workout' : undefined),
                 price: price !== undefined ? parseFloat(price) : undefined
             }
         });
