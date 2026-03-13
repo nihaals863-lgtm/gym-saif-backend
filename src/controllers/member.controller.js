@@ -1408,6 +1408,11 @@ const getMemberDashboard = async (req, res) => {
                 },
                 orderBy: { createdAt: 'desc' },
                 take: 3
+            }),
+            notifications: await prisma.notification.findMany({
+                where: { userId: member.userId },
+                orderBy: { createdAt: 'desc' },
+                take: 20
             })
         };
 
