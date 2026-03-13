@@ -59,7 +59,7 @@ const getPackages = async (req, res) => {
         const { tenantId, role, email, name: userName } = req.user;
         const { branchId } = req.query;
 
-        let where = {};
+        let where = { status: 'Active' };
         if (role === 'SUPER_ADMIN') {
             if (branchId && branchId !== 'all') {
                 where.tenantId = parseInt(branchId);
@@ -120,9 +120,27 @@ const updatePackage = async (req, res) => {
 const deletePackage = async (req, res) => {
     try {
         const { id } = req.params;
+        
+        // Check if there are any member accounts using this package
+        const accountCount = await prisma.pTMemberAccount.count({
+            where: { packageId: parseInt(id) }
+        });
+
+        if (accountCount > 0) {
+            // Instead of hard deleting and breaking history, we soft delete/deactivate it
+            await prisma.pTPackage.update({
+                where: { id: parseInt(id) },
+                data: { status: 'Inactive' }
+            });
+            return res.json({ 
+                message: 'Package is being used by members. It has been marked as Inactive and will no longer be available for new purchases, but historical records are preserved.' 
+            });
+        }
+
         await prisma.pTPackage.delete({ where: { id: parseInt(id) } });
         res.json({ message: 'Package deleted successfully' });
     } catch (error) {
+        console.error('Delete Package Error:', error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -134,8 +152,17 @@ const purchasePackage = async (req, res) => {
         const { tenantId } = req.user;
         const { memberId, packageId, trainerId } = req.body;
 
+        const member = await prisma.member.findUnique({ where: { id: parseInt(memberId) } });
+        if (!member) return res.status(404).json({ message: 'Member not found' });
+        if (member.status !== 'Active') {
+            return res.status(400).json({ message: 'PT packages can only be purchased by members with an Active membership status.' });
+        }
+
         const pkg = await prisma.pTPackage.findUnique({ where: { id: parseInt(packageId) } });
         if (!pkg) return res.status(404).json({ message: 'Package not found' });
+        if (pkg.status !== 'Active') {
+            return res.status(400).json({ message: 'This package is no longer active and cannot be purchased.' });
+        }
 
         const expiryDate = new Date();
         expiryDate.setDate(expiryDate.getDate() + pkg.validityDays);
@@ -223,7 +250,7 @@ const getActiveAccounts = async (req, res) => {
         const accounts = await prisma.pTMemberAccount.findMany({
             where,
             include: {
-                member: { select: { id: true, name: true, memberId: true } },
+                member: { select: { id: true, name: true, memberId: true, status: true } },
                 package: { select: { id: true, name: true } }
             },
             orderBy: { createdAt: 'desc' }
@@ -240,6 +267,13 @@ const logSession = async (req, res) => {
     try {
         const { tenantId: userTenantId } = req.user;
         const { memberId, trainerId, ptAccountId, date, time, duration, notes } = req.body;
+
+        // Check if member is active
+        const member = await prisma.member.findUnique({ where: { id: parseInt(memberId) } });
+        if (!member) return res.status(404).json({ message: 'Member not found' });
+        if (member.status !== 'Active') {
+            return res.status(400).json({ message: 'Sessions can only be scheduled for members with an Active membership status.' });
+        }
 
         // 1. Conflict Check: Ensure trainer is not already booked at the same date and time
         const conflict = await prisma.pTSession.findFirst({

@@ -13,7 +13,8 @@ const {
     getChatContacts,
     getChatMessages,
     sendChatMessage,
-    checkBirthdays
+    checkBirthdays,
+    sendPersonalBirthdayWish
 } = require('../controllers/communication.controller');
 const { protect, authorize } = require('../middleware/auth.middleware');
 
@@ -36,5 +37,6 @@ router.get('/contacts', getChatContacts);
 router.get('/messages/:contactId', getChatMessages);
 router.post('/messages', sendChatMessage);
 router.post('/birthdays/check', checkBirthdays); // New route
+router.post('/birthdays/personal', sendPersonalBirthdayWish);
 
 module.exports = router;
