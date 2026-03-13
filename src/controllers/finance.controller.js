@@ -395,7 +395,6 @@ const settleInvoice = async (req, res) => {
             }
         });
 
-<<<<<<< HEAD
         // Activation logic: If this member has a PT account in 'Pending Payment' status, activate it
         if (updatedInvoice.memberId) {
             await prisma.pTMemberAccount.updateMany({
@@ -406,7 +405,6 @@ const settleInvoice = async (req, res) => {
                 data: {
                     status: 'Active'
                 }
-=======
         // Log the payment settlement
         await prisma.auditLog.create({
             data: {
@@ -437,7 +435,6 @@ const settleInvoice = async (req, res) => {
                     type: 'success',
                     link: `/branchadmin/finance/invoices`
                 }))
->>>>>>> 5a23b7d07f57b5203c1416af326eca8424dfd922
             });
         }
 
