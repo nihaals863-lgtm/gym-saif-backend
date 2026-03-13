@@ -161,6 +161,9 @@ const createPTBooking = async (req, res) => {
             where: { userId: req.user.id }
         });
         if (!member) return res.status(404).json({ message: 'Member profile not found' });
+        if (member.status !== 'Active') {
+            return res.status(400).json({ message: 'You can only book PT sessions with an Active membership status.' });
+        }
 
         const ptAccount = await prisma.pTMemberAccount.findUnique({
             where: { id: parseInt(ptAccountId) },
@@ -212,6 +215,9 @@ const createBooking = async (req, res) => {
             include: { plan: true }
         });
         if (!member) return res.status(404).json({ message: 'Member profile not found' });
+        if (member.status !== 'Active') {
+            return res.status(400).json({ message: 'You can only book sessions with an Active membership status.' });
+        }
 
         const targetClass = await prisma.class.findUnique({
             where: { id: parseInt(classId) },
@@ -649,6 +655,7 @@ const getPTAccounts = async (req, res) => {
                 package: true,
                 member: {
                     select: {
+                        status: true,
                         trainer: {
                             select: {
                                 name: true

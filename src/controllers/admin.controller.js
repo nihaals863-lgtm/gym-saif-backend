@@ -396,6 +396,22 @@ const updateMember = async (req, res) => {
             trainerId: trainerId ? parseInt(trainerId) : null
         };
 
+        // Check if trainer is being assigned and member is active
+        if (trainerId) {
+            const memberToUpdate = await prisma.member.findUnique({
+                where: { id: parseInt(id) },
+                select: { status: true }
+            });
+            
+            const effectiveStatus = status || memberToUpdate?.status;
+            
+            if (effectiveStatus !== 'Active') {
+                return res.status(400).json({ 
+                    message: 'Trainer can only be assigned to members with an Active membership status.' 
+                });
+            }
+        }
+
         if (planId) updateData.planId = parseInt(planId);
         if (startDate) updateData.joinDate = new Date(startDate);
 
