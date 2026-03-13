@@ -134,7 +134,10 @@ const getMembers = async (req, res) => {
 
         const members = await prisma.member.findMany({
             where,
-            include: { tenant: { select: { name: true } } },
+            include: { 
+                tenant: { select: { name: true } },
+                plan: true
+            },
             orderBy: { name: 'asc' }
         });
         res.json(members);

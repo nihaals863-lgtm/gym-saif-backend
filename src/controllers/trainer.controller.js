@@ -1281,6 +1281,37 @@ const getTrainerDashboardStats = async (req, res) => {
             }
         }
 
+        // Fetch Earnings/Commission data for current month
+        const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+        const { config, baseSalary } = req.user;
+        let parsedConfig = {};
+        try {
+            if (config) parsedConfig = typeof config === 'string' ? JSON.parse(config) : config;
+        } catch (e) { }
+
+        const salary = baseSalary ? parseFloat(baseSalary) : 0;
+        const sessionRate = parsedConfig.hourlyRate || 500;
+        const commissionFixed = parsedConfig.commission || 0;
+
+        // Current month PT sessions earnings
+        const monthlySessions = await prisma.pTSession.count({
+            where: {
+                ...whereBase,
+                status: 'Completed',
+                date: { gte: startOfMonth, lt: tomorrow }
+            }
+        });
+        const monthlyCommission = (monthlySessions * sessionRate) + (activeGeneralClients * commissionFixed);
+
+        // Attendance stats for current month
+        const monthlyAttendanceLogs = await prisma.attendance.count({
+            where: {
+                userId: trainerId,
+                date: { gte: startOfMonth, lt: tomorrow },
+                status: 'Present'
+            }
+        });
+
         res.json({
             stats: {
                 activeGeneralClients,
@@ -1289,12 +1320,16 @@ const getTrainerDashboardStats = async (req, res) => {
                 completedToday,
                 pendingToday: todaySessionsCount - completedToday,
                 myClassesCount,
-                completionRate
+                completionRate,
+                monthlyCommission,
+                monthlyAttendance: monthlyAttendanceLogs,
+                salary: salary + monthlyCommission
             },
             todaySessions,
             myClients: recentMembers,
             upcomingClass
         });
+
     } catch (error) {
         console.error('Trainer Dashboard Stats Error:', error);
         res.status(500).json({ message: error.message });

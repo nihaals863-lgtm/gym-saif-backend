@@ -706,9 +706,47 @@ const getPerformanceReport = async (req, res) => {
                 .filter(ex => { const d = new Date(ex.date); return d.getMonth() === m && d.getFullYear() === y; })
                 .reduce((s, ex) => s + Number(ex.amount), 0);
 
+            // Fetch Staff Salaries and Commissions for this month
+            // Note: This is an estimation for reports, ideally linked to a Payroll model
+            const staffInMonth = await prisma.user.findMany({
+                where: { ...whereClause, status: 'Active', role: { in: ['TRAINER', 'MANAGER', 'STAFF'] } },
+                select: { id: true, baseSalary: true, config: true, role: true }
+            });
+
+            let monthlyStaffCost = 0;
+            let monthlyCommissionsCost = 0;
+
+            for (const s of staffInMonth) {
+                monthlyStaffCost += parseFloat(s.baseSalary || 0);
+                
+                if (s.role === 'TRAINER') {
+                    let parsedConfig = {};
+                    try {
+                        if (s.config) parsedConfig = typeof s.config === 'string' ? JSON.parse(s.config) : s.config;
+                    } catch (e) { }
+
+                    const hRate = parsedConfig.hourlyRate || 500;
+                    const commFix = parsedConfig.commission || 0;
+
+                    // Sessions in this specific month
+                    const sessionsInMonth = await prisma.pTSession.count({
+                        where: { trainerId: s.id, status: 'Completed', date: { gte: date, lt: new Date(y, m + 1, 1) } }
+                    });
+                    
+                    // Fixed commission for general clients
+                    const assignedMembers = await prisma.member.count({
+                        where: { trainerId: s.id, status: 'Active' }
+                    });
+
+                    monthlyCommissionsCost += (sessionsInMonth * hRate) + (assignedMembers * commFix);
+                }
+            }
+
+            const totalMonthlyExpense = e + monthlyStaffCost + monthlyCommissionsCost;
+
             totalIncome += r;
-            totalExpenses += e;
-            totalNetProfitCalculated += storeMonthProfit;
+            totalExpenses += totalMonthlyExpense;
+            totalNetProfitCalculated += (r - totalMonthlyExpense);
 
             const g = growthStats
                 .filter(mem => { const d = new Date(mem.joinDate); return d.getMonth() === m && d.getFullYear() === y; }).length;

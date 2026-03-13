@@ -13,6 +13,7 @@ const {
     unfreezeMembership,
     getInvoices,
     payInvoice,
+    failPayment,
     getWalletBalance,
     getSavedCards,
     addSavedCard,
@@ -84,6 +85,7 @@ router.post('/wallet/add', memberOnly, addWalletCredit);
 router.get('/wallet/balance', memberOnly, getWalletBalance);
 router.get('/invoices', memberOnly, getInvoices);
 router.post('/invoices/:id/pay', memberOnly, payInvoice);
+router.post('/invoices/:id/fail', memberOnly, failPayment);
 router.get('/cards', memberOnly, getSavedCards);
 router.post('/cards', memberOnly, addSavedCard);
 router.delete('/cards/:id', memberOnly, deleteSavedCard);

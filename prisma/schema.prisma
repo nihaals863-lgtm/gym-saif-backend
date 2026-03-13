@@ -309,6 +309,10 @@ model MembershipPlan {
   durationType       String   @default("Months")
   maxBookingsPerDay  Int      @default(1)
   maxBookingsPerWeek Int      @default(7)
+  allowTransfer      Boolean  @default(false)
+  showInPurchase     Boolean  @default(true)
+  showOnDashboard    Boolean  @default(true)
+  includeLocker      Boolean  @default(false)
   updatedAt          DateTime @updatedAt
   members            Member[]
   tenant             Tenant   @relation(fields: [tenantId], references: [id])
@@ -372,6 +376,7 @@ model Class {
   maxCapacity     Int
   duration        String?
   location        String?
+  price           Decimal?  @db.Decimal(10, 2)
   requiredBenefit String?
   status          String    @default("Scheduled")
   bookings        Booking[]
@@ -388,9 +393,10 @@ model Booking {
   memberId Int
   classId  Int
   date     DateTime
-  status   String   @default("Upcoming")
-  class    Class    @relation(fields: [classId], references: [id])
-  member   Member   @relation(fields: [memberId], references: [id])
+  status   String    @default("Upcoming")
+  class    Class     @relation(fields: [classId], references: [id])
+  member   Member    @relation(fields: [memberId], references: [id])
+  invoices Invoice[]
 
   @@index([classId], map: "booking_classId_fkey")
   @@index([memberId], map: "booking_memberId_fkey")
@@ -487,8 +493,13 @@ model Invoice {
   paidDate      DateTime?
   paymentMode   String        @default("Cash")
   notes         String?       @db.Text
+<<<<<<< HEAD
   createdAt     DateTime      @default(now())
   updatedAt     DateTime      @default(now()) @updatedAt
+=======
+  bookingId     Int?
+  booking       Booking?      @relation(fields: [bookingId], references: [id])
+>>>>>>> 5a23b7d07f57b5203c1416af326eca8424dfd922
   items         InvoiceItem[]
   member        Member?       @relation(fields: [memberId], references: [id])
   tenant        Tenant        @relation(fields: [tenantId], references: [id])
@@ -985,13 +996,15 @@ enum Role {
 }
 
 model ChatMessage {
-  id         Int      @id @default(autoincrement())
-  tenantId   Int      @default(1)
-  senderId   Int
-  receiverId Int
-  message    String   @db.LongText
-  isRead     Boolean  @default(false)
-  createdAt  DateTime @default(now())
+  id             Int      @id @default(autoincrement())
+  tenantId       Int      @default(1)
+  senderId       Int
+  receiverId     Int
+  message        String?   @db.LongText
+  attachmentUrl  String?   @db.LongText
+  attachmentType String?   @default("image") // "image", "file", etc.
+  isRead         Boolean  @default(false)
+  createdAt      DateTime @default(now())
 
   sender   User @relation("SentMessages", fields: [senderId], references: [id])
   receiver User @relation("ReceivedMessages", fields: [receiverId], references: [id])
