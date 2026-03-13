@@ -395,14 +395,15 @@ const getInvoices = async (req, res) => {
 
         const invoices = await prisma.invoice.findMany({
             where: { tenantId: member.tenantId, memberId: member.id },
+            include: { items: true },
             orderBy: { dueDate: 'desc' }
         });
 
         if (invoices.length === 0) {
             // Seed a few dummy pending invoices for new users so the UI works immediately
             const dummyInvoices = [
-                { invoiceNumber: `INV-${Date.now()}-1`, amount: 2499.00, dueDate: new Date() },
-                { invoiceNumber: `INV-${Date.now()}-2`, amount: 500.00, dueDate: new Date(Date.now() + 86400000 * 30), status: "Unpaid" }
+                { invoiceNumber: `INV-${Date.now()}-1`, amount: 2499.00, dueDate: new Date(), description: 'Gold Plan - Monthly' },
+                { invoiceNumber: `INV-${Date.now()}-2`, amount: 500.00, dueDate: new Date(Date.now() + 86400000 * 30), status: "Unpaid", description: 'PT Session Fee' }
             ];
             for (const d of dummyInvoices) {
                 await prisma.invoice.create({
@@ -412,12 +413,21 @@ const getInvoices = async (req, res) => {
                         invoiceNumber: d.invoiceNumber,
                         amount: d.amount,
                         dueDate: d.dueDate,
-                        status: d.status || "Unpaid"
+                        status: d.status || "Unpaid",
+                        items: {
+                            create: [{
+                                description: d.description,
+                                quantity: 1,
+                                rate: d.amount,
+                                amount: d.amount
+                            }]
+                        }
                     }
                 });
             }
             const seeded = await prisma.invoice.findMany({
                 where: { tenantId: member.tenantId, memberId: member.id },
+                include: { items: true },
                 orderBy: { dueDate: 'desc' }
             });
             const mapped = seeded.map(inv => ({
@@ -427,6 +437,7 @@ const getInvoices = async (req, res) => {
                 amount: parseFloat(inv.amount),
                 status: inv.status,
                 bookingId: inv.bookingId,
+                serviceName: inv.items?.length > 0 ? inv.items.map(i => i.description).join(', ') : (inv.notes || 'Gym Membership'),
                 dueDate: inv.dueDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
             }));
             return res.json(mapped);
@@ -439,6 +450,7 @@ const getInvoices = async (req, res) => {
             amount: parseFloat(inv.amount),
             status: inv.status,
             bookingId: inv.bookingId,
+            serviceName: inv.items?.length > 0 ? inv.items.map(i => i.description).join(', ') : (inv.notes || 'Gym Membership'),
             dueDate: inv.dueDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
         }));
 

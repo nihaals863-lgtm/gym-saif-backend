@@ -258,9 +258,19 @@ const addMember = async (req, res) => {
                         invoiceNumber: `INV-${Date.now()}-${tId}`,
                         memberId: newMember.id,
                         amount: finalPrice,
+                        subtotal: finalPrice,
                         paymentMode: 'Cash',
                         status: 'Unpaid',
-                        dueDate: new Date()
+                        dueDate: new Date(),
+                        notes: `Membership Plan: ${planObj.name} (${cycleMultiplier} Cycle)`,
+                        items: {
+                            create: [{
+                                description: `Membership Plan: ${planObj.name} (${cycleMultiplier} Cycle)`,
+                                quantity: 1,
+                                rate: finalPrice,
+                                amount: finalPrice
+                            }]
+                        }
                     }
                 });
             }
@@ -346,7 +356,31 @@ const getMemberById = async (req, res) => {
         const { id } = req.params;
         const member = await prisma.member.findUnique({
             where: { id: parseInt(id) },
-            include: { trainer: true, tenant: true, plan: true }
+            include: { 
+                trainer: true, 
+                tenant: true, 
+                plan: true,
+                storeOrders: {
+                    include: {
+                        items: {
+                            include: {
+                                product: true
+                            }
+                        }
+                    },
+                    orderBy: {
+                        createdAt: 'desc'
+                    }
+                },
+                invoices: {
+                    orderBy: {
+                        createdAt: 'desc'
+                    },
+                    include: {
+                        items: true
+                    }
+                }
+            }
         });
         if (!member) return res.status(404).json({ message: 'Member not found' });
 

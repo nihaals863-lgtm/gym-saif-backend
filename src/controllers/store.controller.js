@@ -382,10 +382,30 @@ exports.deleteProduct = async (req, res) => {
     }
 };
 
+const fs = require('fs');
+const path = require('path');
+
 exports.checkout = async (req, res) => {
     try {
         const { tenantId: reqTenantId, role } = req.user;
-        const { memberId, items, total, guestInfo, tenantId: bodyTenantId, paymentMode, referenceNumber } = req.body;
+        let { memberId, items, total, guestInfo, tenantId: bodyTenantId, paymentMode, referenceNumber, cartItems, totalAmount } = req.body;
+        
+        // Normalize payload: Support both POS.jsx and StorePage.jsx formats
+        if (!items && cartItems) items = cartItems;
+        if (!total && totalAmount) total = totalAmount;
+        
+        if (!items || !Array.isArray(items)) {
+            return res.status(400).json({ message: 'Cart items are required and must be an array' });
+        }
+        
+        // Normalize items: Map 'id' to 'productId' if necessary
+        const normalizedItems = items.map(item => ({
+            productId: item.productId || item.id,
+            quantity: item.quantity,
+            price: item.price
+        }));
+
+        const itemsToProcess = normalizedItems;
 
         const order = await prisma.$transaction(async (tx) => {
             let actualMemberId = null;
@@ -410,7 +430,7 @@ exports.checkout = async (req, res) => {
             let itemsCount = 0;
             const orderItemsInput = [];
 
-            for (const item of items) {
+            for (const item of itemsToProcess) {
                 const product = await tx.storeProduct.findUnique({ where: { id: parseInt(item.productId) } });
                 if (!product) throw new Error(`Product ${item.productId} not found`);
                 if (product.stock < item.quantity) throw new Error(`Insufficient stock for ${product.name}`);
@@ -444,13 +464,49 @@ exports.checkout = async (req, res) => {
                     total: finalTotal,
                     paymentMode: paymentMode || 'Cash',
                     referenceNumber: referenceNumber || null,
-                    status: 'Completed', // POS orders are typically completed instantly
+                    status: 'Completed',
                     items: {
                         create: orderItemsInput
                     }
+                },
+                include: {
+                    items: {
+                        include: {
+                            product: true
+                        }
+                    }
                 }
             });
-            return newOrder;
+
+            // Create an actual Invoice record for financial tracking
+            const invoiceItems = [];
+            for (const item of newOrder.items) {
+                invoiceItems.push({
+                    description: item.product?.name || `Product #${item.productId}`,
+                    quantity: item.quantity,
+                    rate: item.priceAtBuy,
+                    amount: parseFloat(item.quantity) * parseFloat(item.priceAtBuy)
+                });
+            }
+
+            const invoice = await tx.invoice.create({
+                data: {
+                    tenantId: actualTenantId,
+                    invoiceNumber: `POS-${Date.now()}`,
+                    memberId: actualMemberId,
+                    amount: finalTotal,
+                    status: 'Paid',
+                    dueDate: new Date(),
+                    paidDate: new Date(),
+                    paymentMode: paymentMode || 'Cash',
+                    notes: referenceNumber ? `POS Order #${newOrder.id} [Ref: ${referenceNumber}]` : `POS Order #${newOrder.id}`,
+                    items: {
+                        create: invoiceItems
+                    }
+                }
+            });
+
+            return { ...newOrder, invoice };
         });
 
         res.status(201).json(order);

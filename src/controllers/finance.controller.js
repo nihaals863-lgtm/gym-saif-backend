@@ -264,11 +264,20 @@ const receivePayment = async (req, res) => {
                 invoiceNumber: `RCPT-${Math.floor(100000 + Math.random() * 900000)}`,
                 memberId: parseInt(memberId),
                 amount: finalAmount,
+                subtotal: baseAmount,
                 paymentMode: method || 'Cash',
                 status: 'Paid',
                 dueDate: new Date(),
                 paidDate: new Date(),
-                notes: referenceNumber ? `[Ref: ${referenceNumber}] ${notes || ''}`.trim() : (notes || null)
+                notes: referenceNumber ? `[Ref: ${referenceNumber}] ${notes || ''}`.trim() : (notes || null),
+                items: {
+                    create: [{
+                        description: paymentType || (notes ? notes.substring(0, 50) : 'Manual Payment'),
+                        quantity: 1,
+                        rate: finalAmount,
+                        amount: finalAmount
+                    }]
+                }
             },
             include: { member: true }
         });
@@ -514,12 +523,22 @@ const getTransactions = async (req, res) => {
         const [invoices, storeOrders] = await Promise.all([
             prisma.invoice.findMany({
                 where,
-                include: { member: true, tenant: { select: { name: true } } },
+                include: { 
+                    member: true, 
+                    tenant: { select: { name: true } },
+                    items: true 
+                },
                 orderBy: { paidDate: 'desc' }
             }),
             prisma.storeOrder.findMany({
                 where: storeWhere,
-                include: { member: true, tenant: { select: { name: true } } },
+                include: { 
+                    member: true, 
+                    tenant: { select: { name: true } },
+                    items: {
+                        include: { product: true }
+                    }
+                },
                 orderBy: { date: 'desc' }
             })
         ]);
@@ -529,6 +548,7 @@ const getTransactions = async (req, res) => {
             internalId: inv.id,
             member: inv.member ? inv.member.name : 'Unknown',
             type: 'Membership',
+            serviceName: inv.items?.length > 0 ? inv.items.map(i => i.description).join(', ') : (inv.notes || 'Gym Membership'),
             method: inv.paymentMode || 'Cash',
             amount: Number(inv.amount),
             date: inv.paidDate || inv.dueDate,
@@ -542,6 +562,7 @@ const getTransactions = async (req, res) => {
             internalId: o.id,
             member: o.member ? o.member.name : (o.guestName || 'Guest'),
             type: 'POS Sale',
+            serviceName: o.items?.length > 0 ? o.items.map(i => `${i.product?.name || 'Product'} x${i.quantity}`).join(', ') : 'POS Sale',
             method: o.paymentMode || 'POS',
             amount: Number(o.total),
             date: o.date,
