@@ -954,7 +954,9 @@ const getBookings = async (req, res) => {
         const bookings = await prisma.booking.findMany({
             where,
             include: {
-                member: true,
+                member: {
+                    include: { trainer: true }
+                },
                 class: {
                     include: { trainer: true }
                 }
@@ -1041,7 +1043,14 @@ const getBookingsByDateRange = async (req, res) => {
                 member: { tenantId },
                 date: { gte: new Date(start), lte: new Date(end) }
             },
-            include: { member: true, class: true }
+            include: { 
+                member: {
+                    include: { trainer: true }
+                }, 
+                class: {
+                    include: { trainer: true }
+                }
+            }
         });
         res.json(bookings);
     } catch (error) {
@@ -1054,7 +1063,14 @@ const getBookingById = async (req, res) => {
         const { id } = req.params;
         const booking = await prisma.booking.findUnique({
             where: { id: parseInt(id) },
-            include: { member: true, class: true }
+            include: { 
+                member: {
+                    include: { trainer: true }
+                }, 
+                class: {
+                    include: { trainer: true }
+                }
+            }
         });
         res.json(booking);
     } catch (error) {
@@ -1174,7 +1190,14 @@ const getTodaysBookings = async (req, res) => {
 
         const bookings = await prisma.booking.findMany({
             where,
-            include: { member: true, class: true }
+            include: { 
+                member: {
+                    include: { trainer: true }
+                }, 
+                class: {
+                    include: { trainer: true }
+                }
+            }
         });
         res.json(bookings);
     } catch (error) {
@@ -1187,7 +1210,14 @@ const getBookingCalendar = async (req, res) => {
         const where = req.user.role === 'SUPER_ADMIN' ? {} : { member: { tenantId: req.user.tenantId } };
         const bookings = await prisma.booking.findMany({
             where,
-            include: { member: true, class: true }
+            include: { 
+                member: {
+                    include: { trainer: true }
+                }, 
+                class: {
+                    include: { trainer: true }
+                }
+            }
         });
         res.json(bookings);
     } catch (error) {
@@ -1704,7 +1734,14 @@ const getBookingReport = async (req, res) => {
         const where = role === 'SUPER_ADMIN' ? {} : { member: { tenantId } };
         const bookings = await prisma.booking.findMany({
             where,
-            include: { member: true, class: true }
+            include: { 
+                member: {
+                    include: { trainer: true }
+                }, 
+                class: {
+                    include: { trainer: true }
+                }
+            }
         });
         res.json(bookings);
     } catch (error) {
