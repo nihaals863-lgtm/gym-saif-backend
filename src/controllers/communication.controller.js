@@ -297,7 +297,7 @@ const getChatContacts = async (req, res) => {
             });
 
             userFilters.OR = [
-                { role: { in: ['BRANCH_ADMIN', 'MANAGER'] }, tenantId: memberRecord?.tenantId },
+                { role: { in: ['BRANCH_ADMIN', 'MANAGER', 'STAFF'] }, tenantId: memberRecord?.tenantId },
                 ...(memberRecord?.trainerId ? [{ id: memberRecord.trainerId }] : [])
             ];
             memberFilters = null;
@@ -362,10 +362,10 @@ const getChatContacts = async (req, res) => {
 
         // 2. Process Members
         members.forEach(m => {
-            // If the member is also a user, we might have already added them
-            // But usually we chat with them as a "Member" entity if they are in the list
-            if (!contactMap.has(m.userId || `member-${m.id}`)) {
-                contactMap.set(m.userId || `member-${m.id}`, {
+            // Use userId if available, otherwise fallback to member id string for key
+            const key = m.userId || `member-${m.id}`;
+            if (!contactMap.has(key)) {
+                contactMap.set(key, {
                     id: m.id,
                     name: m.name,
                     phone: m.phone,
@@ -373,13 +373,75 @@ const getChatContacts = async (req, res) => {
                     avatar: m.avatar,
                     type: 'MEMBER',
                     memberId: m.memberId,
+                    userId: m.userId,
                     isStaff: false
                 });
             }
         });
 
-        const finalContacts = Array.from(contactMap.values());
-        res.json(finalContacts);
+        // 3. Augment with Message Info
+        // Fetch all unread counts for this user
+        const unreadCounts = await prisma.chatMessage.groupBy({
+            by: ['senderId'],
+            where: {
+                receiverId: currentUserId,
+                isRead: false
+            },
+            _count: { _all: true }
+        });
+
+        const unreadMap = new Map(unreadCounts.map(u => [u.senderId, u._count._all]));
+
+        // Fetch the VERY LATEST message for each conversation involving the user
+        // We'll fetch recent messages and build a map
+        const recentMessages = await prisma.chatMessage.findMany({
+            where: {
+                OR: [
+                    { senderId: currentUserId },
+                    { receiverId: currentUserId }
+                ]
+            },
+            orderBy: { createdAt: 'desc' },
+            take: 500 // Sufficient for sorting the list
+        });
+
+        const lastMessageMap = new Map();
+        recentMessages.forEach(msg => {
+            const otherId = msg.senderId === currentUserId ? msg.receiverId : msg.senderId;
+            if (!lastMessageMap.has(otherId)) {
+                lastMessageMap.set(otherId, msg);
+            }
+        });
+
+        // 4. Final Formatting and Sorting
+        const contacts = Array.from(contactMap.values()).map(contact => {
+            // Resolve the userId to check counts/messages
+            const uId = contact.isStaff ? contact.id : contact.userId;
+            
+            if (uId) {
+                const lastMsg = lastMessageMap.get(uId);
+                return {
+                    ...contact,
+                    unread: unreadMap.get(uId) || 0,
+                    lastMsg: lastMsg ? lastMsg.message : 'Tap to chat',
+                    time: lastMsg ? new Date(lastMsg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '',
+                    timestamp: lastMsg ? new Date(lastMsg.createdAt).getTime() : 0
+                };
+            }
+            
+            return {
+                ...contact,
+                unread: 0,
+                lastMsg: 'Tap to chat',
+                time: '',
+                timestamp: 0
+            };
+        });
+
+        // Sort: Most recent message first
+        contacts.sort((a, b) => b.timestamp - a.timestamp);
+
+        res.json(contacts);
     } catch (error) {
         console.error('getChatContacts error:', error);
         res.status(500).json({ message: error.message });
@@ -452,6 +514,16 @@ const getChatMessages = async (req, res) => {
             take: 100
         });
 
+        // Mark as read asynchronously
+        prisma.chatMessage.updateMany({
+            where: {
+                senderId: targetUserId,
+                receiverId: currentUserId,
+                isRead: false
+            },
+            data: { isRead: true }
+        }).catch(e => console.error("Update read status error:", e));
+
         res.json(messages);
     } catch (error) {
         console.error('getChatMessages error:', error);
@@ -501,7 +573,7 @@ const checkBirthdays = async (req, res) => {
                 }
             });
 
-            results.push({ id: member.id, name: member.name });
+            results.push({ id: member.id, name: member.name, userId: member.userId });
         }
 
         if (res) {
@@ -512,6 +584,56 @@ const checkBirthdays = async (req, res) => {
     } catch (error) {
         if (res) res.status(500).json({ message: error.message });
         else console.error('[AUTOMATION] Birthday check error:', error);
+    }
+};
+
+const sendPersonalBirthdayWish = async (req, res) => {
+    try {
+        const { memberId, message } = req.body;
+        const tenantId = req.user.tenantId || 1;
+
+        const member = await prisma.member.findUnique({
+            where: { id: parseInt(memberId) }
+        });
+
+        if (!member) return res.status(404).json({ message: "Member not found" });
+
+        const wishMessage = message || `Happy Birthday ${member.name}! Have a fantastic day ahead.`;
+
+        if (member.userId) {
+            await prisma.notification.create({
+                data: {
+                    userId: member.userId,
+                    title: 'Happy Birthday! 🎂',
+                    message: wishMessage,
+                    type: 'success',
+                    link: '#'
+                }
+            });
+
+            await prisma.chatMessage.create({
+                data: {
+                    tenantId,
+                    senderId: req.user.id,
+                    receiverId: member.userId,
+                    message: wishMessage,
+                }
+            });
+        }
+
+        await prisma.communicationLog.create({
+            data: {
+                tenantId: member.tenantId,
+                memberId: member.id,
+                channel: 'System',
+                message: `Personal Birthday Wish sent to ${member.name}: "${wishMessage}"`,
+                status: 'Sent'
+            }
+        });
+
+        res.json({ message: 'Personal wish sent successfully.' });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
     }
 };
 
@@ -529,5 +651,6 @@ module.exports = {
     getChatContacts,
     sendChatMessage,
     getChatMessages,
-    checkBirthdays
+    checkBirthdays,
+    sendPersonalBirthdayWish
 };

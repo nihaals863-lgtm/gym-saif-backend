@@ -954,7 +954,9 @@ const getBookings = async (req, res) => {
         const bookings = await prisma.booking.findMany({
             where,
             include: {
-                member: true,
+                member: {
+                    include: { trainer: true }
+                },
                 class: {
                     include: { trainer: true }
                 }
@@ -1041,7 +1043,14 @@ const getBookingsByDateRange = async (req, res) => {
                 member: { tenantId },
                 date: { gte: new Date(start), lte: new Date(end) }
             },
-            include: { member: true, class: true }
+            include: { 
+                member: {
+                    include: { trainer: true }
+                }, 
+                class: {
+                    include: { trainer: true }
+                }
+            }
         });
         res.json(bookings);
     } catch (error) {
@@ -1054,7 +1063,14 @@ const getBookingById = async (req, res) => {
         const { id } = req.params;
         const booking = await prisma.booking.findUnique({
             where: { id: parseInt(id) },
-            include: { member: true, class: true }
+            include: { 
+                member: {
+                    include: { trainer: true }
+                }, 
+                class: {
+                    include: { trainer: true }
+                }
+            }
         });
         res.json(booking);
     } catch (error) {
@@ -1174,7 +1190,14 @@ const getTodaysBookings = async (req, res) => {
 
         const bookings = await prisma.booking.findMany({
             where,
-            include: { member: true, class: true }
+            include: { 
+                member: {
+                    include: { trainer: true }
+                }, 
+                class: {
+                    include: { trainer: true }
+                }
+            }
         });
         res.json(bookings);
     } catch (error) {
@@ -1187,7 +1210,14 @@ const getBookingCalendar = async (req, res) => {
         const where = req.user.role === 'SUPER_ADMIN' ? {} : { member: { tenantId: req.user.tenantId } };
         const bookings = await prisma.booking.findMany({
             where,
-            include: { member: true, class: true }
+            include: { 
+                member: {
+                    include: { trainer: true }
+                }, 
+                class: {
+                    include: { trainer: true }
+                }
+            }
         });
         res.json(bookings);
     } catch (error) {
@@ -1704,7 +1734,14 @@ const getBookingReport = async (req, res) => {
         const where = role === 'SUPER_ADMIN' ? {} : { member: { tenantId } };
         const bookings = await prisma.booking.findMany({
             where,
-            include: { member: true, class: true }
+            include: { 
+                member: {
+                    include: { trainer: true }
+                }, 
+                class: {
+                    include: { trainer: true }
+                }
+            }
         });
         res.json(bookings);
     } catch (error) {
@@ -2032,9 +2069,12 @@ const deletePlan = async (req, res) => {
 
 const getAllClasses = async (req, res) => {
     try {
-        const { branchId } = req.query;
+        const { branchId, type } = req.query;
         const { tenantId: userTenantId, role, email, name: userName } = req.user;
         let where = {};
+        if (type) {
+            where.type = type;
+        }
 
         if (role === 'SUPER_ADMIN') {
             if (branchId && branchId !== 'all') {
@@ -2158,6 +2198,7 @@ const createClass = async (req, res) => {
                     status: status || 'Scheduled',
                     duration: duration ? String(duration) : '60',
                     requiredBenefit: finalType,
+                    type: type === 'Recovery' ? 'Recovery' : 'Workout',
                     price: price ? parseFloat(price) : null
                 }));
                 await prisma.class.createMany({ data: classesToCreate });
@@ -2179,6 +2220,7 @@ const createClass = async (req, res) => {
                 status: status || 'Scheduled',
                 duration: duration ? String(duration) : '60',
                 requiredBenefit: finalType,
+                type: type === 'Recovery' ? 'Recovery' : 'Workout',
                 price: price ? parseFloat(price) : null
             }
         });
@@ -2210,6 +2252,7 @@ const updateClass = async (req, res) => {
                 status,
                 duration: duration ? String(duration) : undefined,
                 requiredBenefit: type || requiredBenefit,
+                type: type === 'Recovery' ? 'Recovery' : (type === 'Workout' ? 'Workout' : undefined),
                 price: price !== undefined ? parseFloat(price) : undefined
             }
         });

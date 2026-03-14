@@ -36,7 +36,8 @@ const {
     memberCheckOut,
     getMemberCheckInStatus,
     getPTAccounts,
-    createPTBooking
+    createPTBooking,
+    requestDietPlan
 } = require('../controllers/member.controller');
 const {
     getProgress,
@@ -105,6 +106,7 @@ router.get('/workout-plans', managementOrMemberOrTrainer, getWorkoutPlans);
 
 // Diet Plans
 router.get('/diet-plans', managementOrMemberOrTrainer, getDietPlans);
+router.post('/diet-plans/request', memberOnly, requestDietPlan);
 
 // Referrals
 router.get('/referrals', memberOnly, getMyReferrals);
