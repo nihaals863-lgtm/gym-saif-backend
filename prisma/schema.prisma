@@ -92,6 +92,7 @@ model User {
   sentMessages     ChatMessage[] @relation("SentMessages")
   receivedMessages ChatMessage[] @relation("ReceivedMessages")
   notifications    Notification[] @relation("UserNotifications")
+  payrolls         Payroll[]
 
   @@index([tenantId], map: "user_tenantId_fkey")
   @@map("user")
@@ -539,16 +540,24 @@ model Expense {
 }
 
 model Payroll {
-  id       Int     @id @default(autoincrement())
-  tenantId Int
-  staffId  Int
-  amount   Decimal @db.Decimal(10, 2)
-  month    Int
-  year     Int
-  status   String  @default("Pending")
-  tenant   Tenant  @relation(fields: [tenantId], references: [id])
+  id             Int      @id @default(autoincrement())
+  tenantId       Int
+  staffId        Int
+  baseSalary     Decimal  @default(0.00) @db.Decimal(10, 2)
+  attendanceDays Int      @default(0)
+  leaveDays      Int      @default(0)
+  commission     Decimal  @default(0.00) @db.Decimal(10, 2)
+  leaveDeduction Decimal  @default(0.00) @db.Decimal(10, 2)
+  amount         Decimal  @db.Decimal(10, 2)
+  month          Int
+  year           Int
+  status         String   @default("Pending") // Pending, Approved, Confirmed, Rejected, Paid
+  rejectionReason String?  @db.Text
+  tenant         Tenant   @relation(fields: [tenantId], references: [id])
+  staff          User     @relation(fields: [staffId], references: [id])
 
   @@index([tenantId], map: "payroll_tenantId_fkey")
+  @@index([staffId], map: "payroll_staffId_fkey")
   @@map("payroll")
 }
 

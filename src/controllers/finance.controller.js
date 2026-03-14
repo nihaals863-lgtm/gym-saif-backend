@@ -122,7 +122,21 @@ const getInvoices = async (req, res) => {
             storeWhere.status = 'Processing';
         }
 
-        const [invoices, allInvoices, storeOrdersFull, allStoreOrders] = await Promise.all([
+        // Handle Payrolls
+        let payrollWhere = { ...branchWhere };
+        if (role === 'STAFF' || role === 'TRAINER') {
+            payrollWhere.staffId = req.user.id;
+        }
+
+        if (statusFilter === 'Paid') {
+            payrollWhere.status = 'Paid';
+        } else if (statusFilter === 'Unpaid') {
+            payrollWhere.status = { in: ['Approved', 'Confirmed', 'Rejected'] };
+        } else {
+            payrollWhere.status = { in: ['Approved', 'Confirmed', 'Rejected', 'Paid'] };
+        }
+
+        const [invoices, allInvoices, storeOrdersFull, allStoreOrders, payrollsFull, allPayrolls] = await Promise.all([
             prisma.invoice.findMany({
                 where: listWhere,
                 include: { member: true, items: true, tenant: { select: { name: true } } },
@@ -140,6 +154,18 @@ const getInvoices = async (req, res) => {
             prisma.storeOrder.findMany({
                 where: branchWhere,
                 select: { id: true, total: true, status: true, memberId: true }
+            }),
+            prisma.payroll.findMany({
+                where: payrollWhere,
+                include: { staff: true, tenant: { select: { name: true } } },
+                orderBy: [
+                    { year: 'desc' },
+                    { month: 'desc' }
+                ]
+            }),
+            prisma.payroll.findMany({
+                where: payrollWhere,
+                select: { id: true, amount: true, status: true, staffId: true }
             })
         ]);
 
@@ -163,7 +189,31 @@ const getInvoices = async (req, res) => {
             paymentMode: order.paymentMode
         }));
 
-        const combinedInvoices = [...invoices, ...mappedPOS].sort((a, b) => {
+        const mappedPayroll = payrollsFull.map(p => {
+            const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+            return {
+                id: `payroll-${p.id}`,
+                internalId: p.id,
+                type: 'Payroll',
+                invoiceNumber: `PAY-${p.year}-${String(p.month).padStart(2, '0')}-${p.id}`,
+                amount: p.amount,
+                status: p.status === 'Approved' || p.status === 'Confirmed' ? 'Unpaid' : (p.status === 'Paid' ? 'Paid' : (p.status === 'Rejected' ? 'Rejected' : 'Pending')),
+                payrollStatus: p.status, // Original status for logic
+                rejectionReason: p.rejectionReason,
+                dueDate: new Date(p.year, p.month, 0),
+                createdAt: new Date(p.year, p.month - 1, 1),
+                member: { name: p.staff?.name || 'Staff Member', memberId: `EMP-${p.staffId}` },
+                tenant: p.tenant,
+                serviceName: `Salary for ${monthNames[p.month - 1]} ${p.year}`,
+                items: [
+                    { description: 'Base Salary', quantity: 1, rate: p.baseSalary, amount: p.baseSalary },
+                    { description: 'Commission', quantity: 1, rate: p.commission, amount: p.commission },
+                    { description: 'Leave Deduction', quantity: 1, rate: -p.leaveDeduction, amount: -p.leaveDeduction }
+                ]
+            };
+        });
+
+        const combinedInvoices = [...invoices, ...mappedPOS, ...mappedPayroll].sort((a, b) => {
             const dateB = b.createdAt || b.date || b.dueDate;
             const dateA = a.createdAt || a.date || a.dueDate;
             return new Date(dateB) - new Date(dateA);
@@ -171,21 +221,24 @@ const getInvoices = async (req, res) => {
 
         const uniqueInvoicingClients = new Set(allInvoices.filter(i => i.memberId).map(i => i.memberId));
         const uniqueStoreClients = new Set(allStoreOrders.filter(o => o.memberId).map(o => o.memberId));
-        const combinedClients = new Set([...uniqueInvoicingClients, ...uniqueStoreClients]).size;
+        const uniquePayrollStaffs = new Set(allPayrolls.map(p => p.staffId));
+        const combinedClients = new Set([...uniqueInvoicingClients, ...uniqueStoreClients, ...uniquePayrollStaffs]).size;
 
         const totalPaidInvoices = allInvoices.filter(i => i.status === 'Paid').reduce((acc, i) => acc + Number(i.amount), 0);
         const totalPaidStore = allStoreOrders.filter(o => o.status === 'Paid' || o.status === 'Processing' || o.status === 'Completed').reduce((acc, o) => acc + Number(o.total), 0);
+        const totalPaidPayroll = allPayrolls.filter(p => p.status === 'Paid').reduce((acc, p) => acc + Number(p.amount), 0);
 
         const totalUnpaidInvoices = allInvoices.filter(i => i.status !== 'Paid').reduce((acc, i) => acc + Number(i.amount), 0);
         const totalUnpaidStore = allStoreOrders.filter(o => o.status !== 'Paid' && o.status !== 'Processing' && o.status !== 'Completed').reduce((acc, o) => acc + Number(o.total), 0);
+        const totalUnpaidPayroll = allPayrolls.filter(p => ['Approved', 'Confirmed', 'Rejected'].includes(p.status)).reduce((acc, p) => acc + Number(p.amount), 0);
 
         res.status(200).json({
             invoices: combinedInvoices,
             stats: {
                 clients: combinedClients,
-                totalInvoices: allInvoices.length + allStoreOrders.length,
-                paid: totalPaidInvoices + totalPaidStore,
-                unpaid: totalUnpaidInvoices + totalUnpaidStore
+                totalInvoices: allInvoices.length + allStoreOrders.length + allPayrolls.length,
+                paid: totalPaidInvoices + totalPaidStore + totalPaidPayroll,
+                unpaid: totalUnpaidInvoices + totalUnpaidStore + totalUnpaidPayroll
             }
         });
     } catch (error) {
@@ -366,6 +419,55 @@ const settleInvoice = async (req, res) => {
             return res.json({
                 message: 'POS Order settled successfully',
                 invoice: { ...updatedOrder, id: `pos-${updatedOrder.id}` }
+            });
+        }
+
+        // Handle Payrolls
+        if (id.startsWith('payroll-')) {
+            const internalId = parseInt(id.replace('payroll-', ''));
+            const payroll = await prisma.payroll.findUnique({
+                where: { id: internalId }
+            });
+
+            if (!payroll) return res.status(404).json({ message: 'Payroll record not found' });
+
+            // Authorization check
+            if (role !== 'SUPER_ADMIN' && payroll.tenantId !== tenantId) {
+                const isOwner = await prisma.tenant.findFirst({
+                    where: { id: payroll.tenantId, OR: [{ owner: req.user.email }, { owner: req.user.name }] }
+                });
+                if (!isOwner) {
+                    return res.status(403).json({ message: 'Not authorized to update this payroll' });
+                }
+            }
+
+            const updatedPayroll = await prisma.payroll.update({
+                where: { id: internalId },
+                data: {
+                    status: 'Paid'
+                }
+            });
+
+            // Log the payment settlement
+            await prisma.auditLog.create({
+                data: {
+                    userId: req.user.id,
+                    action: 'Payroll Settlement',
+                    module: 'Finance',
+                    details: `Payroll for Staff ID ${payroll.staffId} (Period: ${payroll.month}/${payroll.year}) marked as Paid. Method: ${method || 'Cash'}`,
+                    ip: req.ip || '0.0.0.0',
+                    status: 'Success'
+                }
+            });
+
+            return res.json({
+                message: 'Payroll settled successfully',
+                invoice: { 
+                    ...updatedPayroll, 
+                    id: `payroll-${updatedPayroll.id}`,
+                    status: 'Paid',
+                    invoiceNumber: `PAY-${updatedPayroll.year}-${String(updatedPayroll.month).padStart(2, '0')}-${updatedPayroll.id}`
+                }
             });
         }
 
@@ -631,6 +733,47 @@ const deleteExpense = async (req, res) => {
 const getInvoiceById = async (req, res) => {
     try {
         const { id } = req.params;
+
+        // Handle Payrolls
+        if (id.startsWith('payroll-')) {
+            const internalId = parseInt(id.replace('payroll-', ''));
+            const p = await prisma.payroll.findUnique({
+                where: { id: internalId },
+                include: { staff: true, tenant: { select: { name: true } } }
+            });
+
+            if (!p) return res.status(404).json({ message: 'Payroll record not found' });
+
+            const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+            const mappedPayroll = {
+                id: `payroll-${p.id}`,
+                internalId: p.id,
+                type: 'Payroll',
+                invoiceNumber: `PAY-${p.year}-${String(p.month).padStart(2, '0')}-${p.id}`,
+                amount: p.amount,
+                status: p.status === 'Approved' || p.status === 'Confirmed' ? 'Unpaid' : (p.status === 'Paid' ? 'Paid' : (p.status === 'Rejected' ? 'Rejected' : 'Pending')),
+                payrollStatus: p.status,
+                rejectionReason: p.rejectionReason,
+                dueDate: new Date(p.year, p.month, 0),
+                createdAt: new Date(p.year, p.month - 1, 1),
+                member: { name: p.staff?.name || 'Staff Member', memberId: `EMP-${p.staffId}` },
+                tenant: p.tenant,
+                serviceName: `Salary for ${monthNames[p.month - 1]} ${p.year}`,
+                items: [
+                    { description: 'Base Salary', quantity: 1, rate: p.baseSalary, amount: p.baseSalary },
+                    { description: 'Commission', quantity: 1, rate: p.commission, amount: p.commission },
+                    { description: 'Extra Bonus', quantity: 1, rate: p.extra_bonus || 0, amount: p.extra_bonus || 0 },
+                    { description: 'Leave Deduction', quantity: 1, rate: -p.leaveDeduction, amount: -p.leaveDeduction }
+                ],
+                subtotal: p.amount, // Simplified
+                taxAmount: 0,
+                taxRate: 0,
+                notes: `Payroll for ${p.staff?.name} for the period ${monthNames[p.month - 1]} ${p.year}`
+            };
+
+            return res.json(mappedPayroll);
+        }
+
         const invoice = await prisma.invoice.findUnique({
             where: { id: parseInt(id) },
             include: { member: true, items: true, tenant: { select: { name: true } } }
@@ -646,6 +789,31 @@ const deleteInvoice = async (req, res) => {
     try {
         const { id } = req.params;
         const { role, tenantId: userTenantId } = req.user;
+
+        // Handle Payrolls
+        if (id.startsWith('payroll-')) {
+            const internalId = parseInt(id.replace('payroll-', ''));
+            const payroll = await prisma.payroll.findUnique({ where: { id: internalId } });
+
+            if (!payroll) return res.status(404).json({ message: 'Payroll record not found' });
+
+            // Authorization check: Only Admin can delete payroll from here
+            if (role !== 'SUPER_ADMIN' && role !== 'BRANCH_ADMIN') {
+                return res.status(403).json({ message: 'Unauthorized: Only admins can delete payroll records' });
+            }
+
+            // Cross-tenant check
+            if (role !== 'SUPER_ADMIN' && payroll.tenantId !== userTenantId) {
+                return res.status(403).json({ message: 'Unauthorized' });
+            }
+
+            if (payroll.status === 'Paid') {
+                return res.status(400).json({ message: 'Cannot delete a payroll that has already been Paid' });
+            }
+
+            await prisma.payroll.delete({ where: { id: internalId } });
+            return res.json({ message: 'Payroll deleted successfully' });
+        }
 
         const invoice = await prisma.invoice.findUnique({ where: { id: parseInt(id) } });
         if (!invoice) return res.status(404).json({ message: 'Invoice not found' });

@@ -111,11 +111,11 @@ const getAllMembers = async (req, res) => {
 const addMember = async (req, res) => {
     try {
         const { tenantId: userTenantId, email: userEmail, name: userName } = req.user;
-        const { 
-            name, email, phone, gender, avatar, planId, 
+        const {
+            name, email, phone, gender, avatar, planId,
             startDate, duration, branchIds, effectiveBranchId: effB,
-            benefits, healthConditions, medicalHistory, fitnessGoal, 
-            emergencyName, emergencyPhone, dob, source, 
+            benefits, healthConditions, medicalHistory, fitnessGoal,
+            emergencyName, emergencyPhone, dob, source,
             referralCode, idType, idNumber, address,
             trainerId, branchId
         } = req.body;
@@ -232,7 +232,7 @@ const addMember = async (req, res) => {
                     phone,
                     planId: planId ? parseInt(planId) : null,
                     status: 'Active',
-                    avatar: avatarUrl,  
+                    avatar: avatarUrl,
                     gender,
                     dob,
                     source: source || 'Walk-in',
@@ -315,7 +315,7 @@ const addMember = async (req, res) => {
                     if (existingLead) {
                         await prisma.lead.update({
                             where: { id: existingLead.id },
-                            data: { 
+                            data: {
                                 status: 'Converted',
                                 notes: JSON.stringify({ referrerId: referralCode })
                             }
@@ -356,9 +356,9 @@ const getMemberById = async (req, res) => {
         const { id } = req.params;
         const member = await prisma.member.findUnique({
             where: { id: parseInt(id) },
-            include: { 
-                trainer: true, 
-                tenant: true, 
+            include: {
+                trainer: true,
+                tenant: true,
                 plan: true,
                 storeOrders: {
                     include: {
@@ -436,12 +436,12 @@ const updateMember = async (req, res) => {
                 where: { id: parseInt(id) },
                 select: { status: true }
             });
-            
+
             const effectiveStatus = status || memberToUpdate?.status;
-            
+
             if (effectiveStatus !== 'Active') {
-                return res.status(400).json({ 
-                    message: 'Trainer can only be assigned to members with an Active membership status.' 
+                return res.status(400).json({
+                    message: 'Trainer can only be assigned to members with an Active membership status.'
                 });
             }
         }
@@ -504,46 +504,46 @@ const deleteMember = async (req, res) => {
 
         await prisma.$transaction(async (tx) => {
             // 1. Delete Service Requests
-            await tx.serviceRequest.deleteMany({ where: { memberId } }).catch(() => {});
+            await tx.serviceRequest.deleteMany({ where: { memberId } }).catch(() => { });
 
             // 2. Delete Bookings
-            await tx.booking.deleteMany({ where: { memberId } }).catch(() => {});
+            await tx.booking.deleteMany({ where: { memberId } }).catch(() => { });
 
             // 3. Delete Invoice Items first, then Invoices
             const invoices = await tx.invoice.findMany({ where: { memberId }, select: { id: true } });
             if (invoices.length > 0) {
                 const invoiceIds = invoices.map(inv => inv.id);
-                await tx.invoiceItem.deleteMany({ where: { invoiceId: { in: invoiceIds } } }).catch(() => {});
+                await tx.invoiceItem.deleteMany({ where: { invoiceId: { in: invoiceIds } } }).catch(() => { });
             }
-            await tx.invoice.deleteMany({ where: { memberId } }).catch(() => {});
+            await tx.invoice.deleteMany({ where: { memberId } }).catch(() => { });
 
             // 4. Delete Attendance records
-            await tx.attendance.deleteMany({ where: { memberId } }).catch(() => {});
+            await tx.attendance.deleteMany({ where: { memberId } }).catch(() => { });
 
             // 5. Delete Wallet Transactions, then Wallet
             const wallet = await tx.wallet.findFirst({ where: { memberId } }).catch(() => null);
             if (wallet) {
-                await tx.transaction.deleteMany({ where: { walletId: wallet.id } }).catch(() => {});
-                await tx.wallet.delete({ where: { id: wallet.id } }).catch(() => {});
+                await tx.transaction.deleteMany({ where: { walletId: wallet.id } }).catch(() => { });
+                await tx.wallet.delete({ where: { id: wallet.id } }).catch(() => { });
             }
 
             // 6. Delete Member Progress
-            await tx.memberProgress.deleteMany({ where: { memberId } }).catch(() => {});
+            await tx.memberProgress.deleteMany({ where: { memberId } }).catch(() => { });
 
             // 7. Delete Feedback
-            await tx.feedback.deleteMany({ where: { memberId } }).catch(() => {});
+            await tx.feedback.deleteMany({ where: { memberId } }).catch(() => { });
 
             // 8. Delete Store Order Items first, then Store Orders
             const storeOrders = await tx.storeOrder.findMany({ where: { memberId }, select: { id: true } });
             if (storeOrders.length > 0) {
                 const orderIds = storeOrders.map(o => o.id);
-                await tx.storeOrderItem.deleteMany({ where: { orderId: { in: orderIds } } }).catch(() => {});
+                await tx.storeOrderItem.deleteMany({ where: { orderId: { in: orderIds } } }).catch(() => { });
             }
-            await tx.storeOrder.deleteMany({ where: { memberId } }).catch(() => {});
+            await tx.storeOrder.deleteMany({ where: { memberId } }).catch(() => { });
 
             // 9. Delete PT Sessions, then PT Member Account
-            await tx.pTSession.deleteMany({ where: { memberId } }).catch(() => {});
-            await tx.pTMemberAccount.deleteMany({ where: { memberId } }).catch(() => {});
+            await tx.pTSession.deleteMany({ where: { memberId } }).catch(() => { });
+            await tx.pTMemberAccount.deleteMany({ where: { memberId } }).catch(() => { });
 
             // 10. Finally delete the Member
             await tx.member.delete({ where: { id: memberId } });
@@ -749,7 +749,7 @@ const createStaff = async (req, res) => {
         if (role === 'Trainer') config = trainerConfig;
         if (role === 'Sales') config = salesConfig;
         if (role === 'Manager') config = managerConfig;
- 
+
         let avatarUrl = avatar || null;
         if (avatar && avatar.startsWith('data:image')) {
             try {
@@ -3088,8 +3088,8 @@ const getTrainerStats = async (req, res) => {
 const getNotificationSettings = async (req, res) => {
     try {
         const headerTenantId = req.headers['x-tenant-id'];
-        const tenantId = (req.user.role === 'SUPER_ADMIN' && headerTenantId) 
-            ? parseInt(headerTenantId) 
+        const tenantId = (req.user.role === 'SUPER_ADMIN' && headerTenantId)
+            ? parseInt(headerTenantId)
             : req.user.tenantId;
 
         if (!tenantId) return res.status(400).json({ message: 'Tenant ID is required' });
@@ -3113,8 +3113,8 @@ const getNotificationSettings = async (req, res) => {
 const updateNotificationSettings = async (req, res) => {
     try {
         const headerTenantId = req.headers['x-tenant-id'];
-        const tenantId = (req.user.role === 'SUPER_ADMIN' && headerTenantId) 
-            ? parseInt(headerTenantId) 
+        const tenantId = (req.user.role === 'SUPER_ADMIN' && headerTenantId)
+            ? parseInt(headerTenantId)
             : req.user.tenantId;
 
         if (!tenantId) return res.status(400).json({ message: 'Tenant ID is required' });
@@ -3172,8 +3172,8 @@ const updateSecuritySettings = async (req, res) => {
 const runReminders = async (req, res) => {
     try {
         const headerTenantId = req.headers['x-tenant-id'];
-        const tenantId = (req.user.role === 'SUPER_ADMIN' && headerTenantId) 
-            ? parseInt(headerTenantId) 
+        const tenantId = (req.user.role === 'SUPER_ADMIN' && headerTenantId)
+            ? parseInt(headerTenantId)
             : req.user.tenantId;
 
         if (!tenantId) return res.status(400).json({ message: 'Tenant ID is required' });
@@ -3346,14 +3346,14 @@ const updateServiceRequestStatus = async (req, res) => {
 const getAttendanceQrPreview = async (req, res) => {
     try {
         const headerTenantId = req.headers['x-tenant-id'];
-        const tenantId = (req.user.role === 'SUPER_ADMIN' && headerTenantId) 
-            ? parseInt(headerTenantId) 
+        const tenantId = (req.user.role === 'SUPER_ADMIN' && headerTenantId)
+            ? parseInt(headerTenantId)
             : req.user.tenantId;
 
         if (!tenantId) {
             return res.status(400).json({ message: 'Branch ID is required to generate QR code.' });
         }
-        
+
         // Generate QR Code data using dynamic frontend origin
         const frontendUrl = req.headers.origin || 'http://localhost:5173';
         const qrData = `${frontendUrl}/scan?branchId=${tenantId}&token=GYM_${tenantId}_SECURE`;
@@ -3374,8 +3374,8 @@ const getAttendanceQrPreview = async (req, res) => {
 const downloadAttendanceQrCode = async (req, res) => {
     try {
         const headerTenantId = req.headers['x-tenant-id'];
-        const tenantId = (req.user.role === 'SUPER_ADMIN' && headerTenantId) 
-            ? parseInt(headerTenantId) 
+        const tenantId = (req.user.role === 'SUPER_ADMIN' && headerTenantId)
+            ? parseInt(headerTenantId)
             : req.user.tenantId;
 
         if (!tenantId) {

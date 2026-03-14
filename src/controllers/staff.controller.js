@@ -430,8 +430,20 @@ const getTasks = async (req, res) => {
             where.assignedToId = userId;
         }
 
-        if (status && status !== 'All') where.status = status;
-        if (search) where.title = { contains: search };
+        if (status && status !== 'All' && status !== 'All Status') {
+            if (status === 'Overdue') {
+                where.status = { not: 'Completed' };
+                where.dueDate = { lt: new Date() };
+            } else {
+                where.status = status;
+            }
+        }
+        if (search) {
+            where.OR = [
+                { title: { contains: search } },
+                { description: { contains: search } }
+            ];
+        }
 
         console.log(`[StaffTasks] Role: ${role}, UserID: ${userId}, TenantID: ${tenantIdToUse}, Where:`, JSON.stringify(where));
 
@@ -612,6 +624,58 @@ const updateTaskStatus = async (req, res) => {
             data: { status }
         });
         res.json(task);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const deleteTask = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { id: userId, role } = req.user;
+
+        const task = await prisma.task.findUnique({ where: { id: parseInt(id) } });
+        if (!task) return res.status(404).json({ message: 'Task not found' });
+
+        // Security: Allow creator, admin, or the assigned person (if task is completed) to delete.
+        const canDelete = role === 'SUPER_ADMIN' || 
+                         role === 'BRANCH_ADMIN' || 
+                         role === 'MANAGER' || 
+                         task.creatorId === userId || 
+                         (task.assignedToId === userId && task.status === 'Completed');
+
+        if (!canDelete) {
+            return res.status(403).json({ message: 'Unauthorized: You do not have permission to delete this task' });
+        }
+
+        await prisma.task.delete({ where: { id: parseInt(id) } });
+        res.json({ message: 'Task deleted successfully' });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const getTaskById = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const task = await prisma.task.findUnique({
+            where: { id: parseInt(id) },
+            include: {
+                assignedTo: { select: { id: true, name: true } },
+                creator: { select: { id: true, name: true } }
+            }
+        });
+        if (!task) return res.status(404).json({ message: 'Task not found' });
+        res.json({
+            id: task.id,
+            title: task.title,
+            description: task.description || '',
+            assignedTo: task.assignedTo?.name || 'Unassigned',
+            assignedBy: task.creator?.name || 'Admin',
+            priority: task.priority,
+            due: task.dueDate,
+            status: task.status
+        });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -1055,9 +1119,11 @@ module.exports = {
     getMyAttendance,
     recordAttendance,
     getTasks,
+    getTaskById,
     createTask,
     getTaskStats,
     updateTaskStatus,
+    deleteTask,
     getBranchTeam,
     getMyBranch,
     getLockers,

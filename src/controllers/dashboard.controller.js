@@ -6,7 +6,7 @@ exports.getManagerDashboard = async (req, res) => {
         const tenantId = req.headers['x-tenant-id'] || req.query.tenantId ? parseInt(req.headers['x-tenant-id'] || req.query.tenantId) : req.user.tenantId;
 
 
-        const [activeMembers, classesToday, paymentsDue] = await Promise.all([
+        const [activeMembers, classesToday, paymentsDueInvoices, paymentsDuePayrolls] = await Promise.all([
             prisma.member.count({
                 where: { tenantId, status: { in: ['Active', 'active'] } }
             }),
@@ -15,8 +15,13 @@ exports.getManagerDashboard = async (req, res) => {
             }),
             prisma.invoice.count({
                 where: { tenantId, status: { in: ['Overdue', 'unpaid', 'Unpaid'] } }
+            }),
+            prisma.payroll.count({
+                where: { tenantId, status: 'Approved' }
             })
         ]);
+
+        const paymentsDue = paymentsDueInvoices + paymentsDuePayrolls;
 
         // Financials
         const today = new Date();
@@ -116,7 +121,14 @@ exports.getManagerDashboard = async (req, res) => {
         ]);
 
         const collectionToday = todayInvoices.reduce((sum, inv) => sum + Number(inv.amount), 0);
-        const pendingDuesAmount = overdueInvoices.reduce((sum, inv) => sum + Number(inv.amount), 0);
+        
+        // Pending dues from payroll
+        const overduePayrolls = await prisma.payroll.findMany({
+            where: { tenantId, status: 'Approved' }
+        });
+        const pendingDuesAmount = overdueInvoices.reduce((sum, inv) => sum + Number(inv.amount), 0) + 
+                             overduePayrolls.reduce((sum, p) => sum + Number(p.amount), 0);
+        
         const localExpenses = expenses.reduce((sum, exp) => sum + Number(exp.amount), 0);
 
         const totalAssets = equipmentList.length;
@@ -158,7 +170,8 @@ exports.getStaffDashboard = async (req, res) => {
             checkinsToday,
             newEnquiriesToday,
             assignedTasks,
-            pendingPayments,
+            pendingInvoiceCount,
+            pendingPayrollCount,
             highPriorityTasks,
             upcomingClasses
         ] = await Promise.all([
@@ -174,6 +187,9 @@ exports.getStaffDashboard = async (req, res) => {
             prisma.invoice.count({
                 where: { tenantId, status: 'Unpaid' }
             }),
+            prisma.payroll.count({
+                where: { tenantId, status: 'Approved' } // Counts as Unpaid in Dashboard
+            }),
             prisma.task.count({
                 where: { assignedToId: staffId, status: 'Pending', priority: 'High' }
             }),
@@ -182,12 +198,19 @@ exports.getStaffDashboard = async (req, res) => {
             })
         ]);
 
-        // Pending Actions: Unpaid Invoices & New Inquiries
-        const [unpaidInvoices, recentEnquiries] = await Promise.all([
+        const pendingPayments = pendingInvoiceCount + pendingPayrollCount;
+
+        // Pending Actions: Unpaid Invoices, Approved Payrolls & New Inquiries
+        const [unpaidInvoices, approvedPayrolls, recentEnquiries] = await Promise.all([
             prisma.invoice.findMany({
                 where: { tenantId, status: 'Unpaid' },
                 take: 2,
                 orderBy: { dueDate: 'asc' }
+            }),
+            prisma.payroll.findMany({
+                where: { tenantId, status: 'Approved' },
+                take: 2,
+                orderBy: { createdAt: 'desc' }
             }),
             prisma.lead.findMany({
                 where: { tenantId, status: 'New' },
@@ -201,6 +224,11 @@ exports.getStaffDashboard = async (req, res) => {
                 type: 'Payment',
                 title: 'Payment Due',
                 subtitle: `Invoice #${inv.invoiceNumber} (₹${inv.amount})`
+            })),
+            ...approvedPayrolls.map(p => ({
+                type: 'Payroll',
+                title: 'Payroll Approved',
+                subtitle: `Salary for Staff (₹${p.amount})`
             })),
             ...recentEnquiries.map(enq => ({
                 type: 'Enquiry',
