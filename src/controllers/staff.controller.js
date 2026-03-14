@@ -427,12 +427,15 @@ const getTasks = async (req, res) => {
         }
 
         if (myTasks === 'true') {
-            where.assignedToId = userId;
+            where.OR = [
+                { assignedToId: userId },
+                { staffId: userId }
+            ];
         }
 
         if (status && status !== 'All' && status !== 'All Status') {
             if (status === 'Overdue') {
-                where.status = { not: 'Completed' };
+                where.status = { not: 'Completed', notIn: ['Approved'] };
                 where.dueDate = { lt: new Date() };
             } else {
                 where.status = status;
@@ -451,7 +454,9 @@ const getTasks = async (req, res) => {
             where,
             include: {
                 assignedTo: { select: { id: true, name: true } },
-                creator: { select: { id: true, name: true } }
+                creator: { select: { id: true, name: true } },
+                manager: { select: { id: true, name: true } },
+                staff: { select: { id: true, name: true } }
             },
             orderBy: { dueDate: 'asc' }
         });
@@ -460,12 +465,14 @@ const getTasks = async (req, res) => {
             id: t.id,
             title: t.title,
             description: t.description || '',
-            assignedTo: t.assignedTo?.name || 'Unassigned',
-            assignedToId: t.assignedToId,
-            assignedBy: t.creator?.name || 'Admin',
+            assignedTo: t.staff?.name || t.assignedTo?.name || 'Unassigned',
+            assignedToId: t.staffId || t.assignedToId,
+            assignedBy: t.manager?.name || t.creator?.name || 'Admin',
             priority: t.priority,
-            due: t.dueDate,
+            due: t.staffDeadline || t.dueDate,
+            overallDueDate: t.dueDate,
             status: t.status,
+            delegationNote: t.delegationNote || '',
             updated: 'Recently'
         }));
 
@@ -601,7 +608,7 @@ const getTaskStats = async (req, res) => {
             prisma.task.count({
                 where: {
                     ...where,
-                    status: { not: 'Completed' },
+                    status: { notIn: ['Completed', 'Approved'] },
                     dueDate: { lt: new Date() }
                 }
             })
@@ -621,8 +628,28 @@ const updateTaskStatus = async (req, res) => {
 
         const task = await prisma.task.update({
             where: { id: parseInt(id) },
-            data: { status }
+            data: { status },
+            include: { creator: true, manager: true }
         });
+
+        // Notification: Notify Creator/Manager when status changes (especially Completed)
+        if (status === 'Completed' || status === 'In Progress') {
+            const notifyIds = [task.creatorId, task.managerId].filter(uid => uid && uid !== req.user.id);
+            for (const uid of [...new Set(notifyIds)]) {
+                try {
+                    await prisma.notification.create({
+                        data: {
+                            userId: uid,
+                            title: `Task Update: ${status}`,
+                            message: `Staff has updated "${task.title}" to ${status}.`,
+                            type: status === 'Completed' ? 'success' : 'info',
+                            link: '/dashboard'
+                        }
+                    });
+                } catch (err) { console.error('Notify Error:', err); }
+            }
+        }
+
         res.json(task);
     } catch (error) {
         res.status(500).json({ message: error.message });

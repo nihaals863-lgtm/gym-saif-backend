@@ -1458,7 +1458,7 @@ const getTasks = async (req, res) => {
     try {
         const { id: userId, tenantId: userTenantId, role, email, name: userName } = req.user;
         const headerTenantId = req.headers['x-tenant-id'];
-        const { branchId: queryBranchId, status: queryStatus } = req.query;
+        const { branchId: queryBranchId, status: queryStatus, type } = req.query;
 
         const resolveBranchId = () => {
             if (queryBranchId && queryBranchId !== 'undefined' && queryBranchId !== 'null' && queryBranchId !== 'all') return queryBranchId;
@@ -1468,27 +1468,24 @@ const getTasks = async (req, res) => {
         const branchId = resolveBranchId();
 
         let where = {};
+        
+        // Base hierarchy filtering
         if (role === 'SUPER_ADMIN') {
             if (branchId) where.tenantId = parseInt(branchId);
-        } else if (role === 'BRANCH_ADMIN' || role === 'MANAGER') {
-            if (branchId && branchId !== 'all') {
-                where.tenantId = parseInt(branchId);
-            } else {
-                let orConditions = [];
-                if (userTenantId) orConditions.push({ id: userTenantId });
-                if (email) orConditions.push({ owner: email });
-                if (userName) orConditions.push({ owner: userName });
-
-                // Fetch tasks for all managed branches
-                const branches = await prisma.tenant.findMany({
-                    where: {
-                        OR: orConditions.length > 0 ? orConditions : undefined
-                    },
-                    select: { id: true }
-                });
-                const managedIds = branches.map(b => b.id);
-                where.tenantId = { in: managedIds };
-            }
+        } else if (role === 'BRANCH_ADMIN') {
+            where.tenantId = userTenantId;
+        } else if (role === 'MANAGER') {
+            // Managers see tasks created for their branch OR tasks assigned SPECIFICALLY to them
+            where.OR = [
+                { tenantId: userTenantId },
+                { managerId: userId }
+            ];
+        } else if (role === 'STAFF' || role === 'TRAINER') {
+            // Staff see tasks delegated specifically to them
+            where.OR = [
+                { staffId: userId },
+                { assignedToId: userId }
+            ];
         } else {
             where.tenantId = userTenantId;
         }
@@ -1497,11 +1494,19 @@ const getTasks = async (req, res) => {
             where.status = queryStatus;
         }
 
+        // Additional type-based filtering if requested (e.g., "My Tasks" vs "Branch Tasks")
+        if (type === 'my-tasks') {
+            if (role === 'MANAGER') where = { managerId: userId };
+            if (role === 'STAFF' || role === 'TRAINER') where = { OR: [{ staffId: userId }, { assignedToId: userId }] };
+        }
+
         const tasks = await prisma.task.findMany({
             where,
             include: {
                 assignedTo: { select: { id: true, name: true } },
-                creator: { select: { id: true, name: true } }
+                creator: { select: { id: true, name: true } },
+                manager: { select: { id: true, name: true } },
+                staff: { select: { id: true, name: true } }
             },
             orderBy: { dueDate: 'asc' }
         });
@@ -1509,13 +1514,17 @@ const getTasks = async (req, res) => {
         const formatted = tasks.map(t => ({
             id: t.id,
             title: t.title,
-            assignedTo: t.assignedTo?.name || 'Unassigned',
-            assignedToId: t.assignedToId,
+            assignedTo: t.staff?.name || t.assignedTo?.name || t.manager?.name || 'Unassigned',
+            assignedToId: t.staffId || t.assignedToId || t.managerId,
             priority: t.priority,
             dueDate: t.dueDate?.toISOString().split('T')[0] || 'N/A',
+            staffDeadline: t.staffDeadline?.toISOString().split('T')[0],
             status: t.status,
             creator: t.creator?.name || 'Admin',
+            manager: t.manager?.name,
+            staff: t.staff?.name,
             description: t.description || '',
+            delegationNote: t.delegationNote || '',
             tenantId: t.tenantId
         }));
 
@@ -1564,19 +1573,22 @@ const getTaskStats = async (req, res) => {
             where.tenantId = userTenantId;
         }
 
-        const total = await prisma.task.count({ where });
-        const pending = await prisma.task.count({ where: { ...where, status: 'Pending' } });
-        const inProgress = await prisma.task.count({ where: { ...where, status: 'In Progress' } });
-        const completed = await prisma.task.count({ where: { ...where, status: 'Completed' } });
-        const overdue = await prisma.task.count({
-            where: {
-                ...where,
-                status: { not: 'Completed' },
-                dueDate: { lt: new Date() }
-            }
-        });
+        const [total, pending, inProgress, completed, approved, overdue] = await Promise.all([
+            prisma.task.count({ where }),
+            prisma.task.count({ where: { ...where, status: 'Pending' } }),
+            prisma.task.count({ where: { ...where, status: 'In Progress' } }),
+            prisma.task.count({ where: { ...where, status: 'Completed' } }),
+            prisma.task.count({ where: { ...where, status: 'Approved' } }),
+            prisma.task.count({
+                where: {
+                    ...where,
+                    status: { notIn: ['Completed', 'Approved'] },
+                    dueDate: { lt: new Date() }
+                }
+            })
+        ]);
 
-        res.json({ total, pending, inProgress, completed, overdue });
+        res.json({ total, pending, inProgress, completed, approved, overdue });
     } catch (error) {
         console.error('Error fetching task stats:', error);
         res.status(500).json({ message: error.message });
@@ -1589,8 +1601,28 @@ const updateTaskStatus = async (req, res) => {
         const { status } = req.body;
         const updated = await prisma.task.update({
             where: { id: parseInt(id) },
-            data: { status }
+            data: { status },
+            include: { creator: true, manager: true, staff: true }
         });
+
+        // Notification: Notify Creator/Manager when status changes (especially Completed)
+        if (status === 'Completed' || status === 'Approved') {
+            const notifyIds = [updated.creatorId, updated.managerId].filter(uid => uid && uid !== updated.staffId);
+            for (const uid of [...new Set(notifyIds)]) {
+                try {
+                    await prisma.notification.create({
+                        data: {
+                            userId: uid,
+                            title: `Task ${status}`,
+                            message: `Task "${updated.title}" is now ${status}.`,
+                            type: 'success',
+                            link: '/dashboard'
+                        }
+                    });
+                } catch (err) { console.error('Notify Error:', err); }
+            }
+        }
+
         res.json(updated);
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -1617,7 +1649,7 @@ const updateTask = async (req, res) => {
 
 const createTask = async (req, res) => {
     try {
-        const { title, description, assignedToId, priority, dueDate, status, tenantId: bodyTenantId } = req.body;
+        const { title, description, managerId, assignedToId, priority, dueDate, status, tenantId: bodyTenantId } = req.body;
         const { id: creatorId, tenantId: userTenantId, role, email, name: userName } = req.user;
 
         let tenantIdToUse = userTenantId;
@@ -1625,7 +1657,6 @@ const createTask = async (req, res) => {
         if (role === 'SUPER_ADMIN') {
             tenantIdToUse = bodyTenantId ? parseInt(bodyTenantId) : null;
         } else if ((role === 'BRANCH_ADMIN' || role === 'MANAGER') && bodyTenantId) {
-            // Validate that the user actually owns/manages this branch
             const targetBranch = await prisma.tenant.findFirst({
                 where: {
                     id: parseInt(bodyTenantId),
@@ -1649,17 +1680,84 @@ const createTask = async (req, res) => {
                 description,
                 priority: priority || 'Medium',
                 dueDate: new Date(dueDate),
+                managerId: managerId ? parseInt(managerId) : null,
                 assignedToId: assignedToId ? parseInt(assignedToId) : null,
                 creatorId,
                 tenantId: tenantIdToUse,
                 status: status || 'Pending'
             },
-            include: { assignedTo: true }
+            include: { 
+                assignedTo: { select: { id: true, name: true } },
+                manager: { select: { id: true, name: true } }
+            }
         });
 
         res.status(201).json(newTask);
+
+        // Notification: Notify Manager or Staff
+        const targetUserId = newTask.managerId || newTask.assignedToId;
+        if (targetUserId && targetUserId !== creatorId) {
+            try {
+                await prisma.notification.create({
+                    data: {
+                        userId: targetUserId,
+                        title: 'New Task Assigned',
+                        message: `New task: ${newTask.title}. Priority: ${newTask.priority}`,
+                        type: 'info',
+                        link: newTask.managerId ? '/dashboard' : '/manager/tasks'
+                    }
+                });
+            } catch (err) { console.error('Notify Error:', err); }
+        }
     } catch (error) {
         console.error("Task Creation Error:", error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const delegateTask = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { staffId, delegationNote, staffDeadline } = req.body;
+        const { id: userId, role } = req.user;
+
+        const task = await prisma.task.findUnique({ where: { id: parseInt(id) } });
+        if (!task) return res.status(404).json({ message: 'Task not found' });
+
+        // Only Manager assigned to the task or Branch Admin can delegate
+        if (role !== 'BRANCH_ADMIN' && role !== 'SUPER_ADMIN' && task.managerId !== userId) {
+            return res.status(403).json({ message: 'Not authorized to delegate this task' });
+        }
+
+        const updated = await prisma.task.update({
+            where: { id: parseInt(id) },
+            data: {
+                staffId: parseInt(staffId),
+                delegationNote,
+                staffDeadline: staffDeadline ? new Date(staffDeadline) : null,
+                status: 'Pending' // Reset to pending for staff
+            },
+            include: { staff: { select: { id: true, name: true } } }
+        });
+
+        res.json(updated);
+
+        // Notification: Notify Staff
+        if (updated.staffId && updated.staffId !== userId) {
+            try {
+                await prisma.notification.create({
+                    data: {
+                        userId: updated.staffId,
+                        title: 'New Delegated Task',
+                        message: `Delegated: ${updated.title}. Due: ${updated.staffDeadline ? updated.staffDeadline.toLocaleDateString() : 'N/A'}`,
+                        type: 'warning',
+                        link: '/dashboard'
+                    }
+                });
+            } catch (err) { console.error('Notify Error:', err); }
+        }
+    } catch (error) {
+        console.error("Task Delegation Error:", error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -3546,6 +3644,7 @@ module.exports = {
     updateTaskStatus,
     updateTask,
     createTask,
+    delegateTask,
     getTaskById,
     deleteTask,
     assignTask,

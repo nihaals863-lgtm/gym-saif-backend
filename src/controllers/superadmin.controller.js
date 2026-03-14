@@ -441,39 +441,21 @@ const fetchDashboardCards = async (req, res) => {
         const plansTrend = `${retentionRate}% retention`;
         const plansTrendDirection = retentionRate >= 80 ? 'up' : retentionRate >= 50 ? 'stable' : 'down';
 
-        // --- MONTHLY REVENUE ---
-        const currentMonthRevenue = await prisma.saasPayment.aggregate({
-            _sum: { amount: true },
-            where: { status: 'Success', date: { gte: currentMonthStart } }
+        // --- OPERATIONAL TASKS ---
+        const totalTasks = await prisma.task.count();
+        const completedTasks = await prisma.task.count({
+            where: { status: { in: ['Completed', 'Approved'] } }
         });
-        const lastMonthRevenue = await prisma.saasPayment.aggregate({
-            _sum: { amount: true },
-            where: { status: 'Success', date: { gte: previousMonthStart, lte: previousMonthEnd } }
-        });
-        const currentRev = currentMonthRevenue._sum.amount ? parseFloat(currentMonthRevenue._sum.amount) : 0;
-        const lastRev = lastMonthRevenue._sum.amount ? parseFloat(lastMonthRevenue._sum.amount) : 0;
-        const totalRevenueAll = await prisma.saasPayment.aggregate({
-            _sum: { amount: true },
-            where: { status: 'Success' }
-        });
-        const revenueValue = totalRevenueAll._sum.amount ? parseFloat(totalRevenueAll._sum.amount) : 0;
-
-        let revenueTrend;
-        let revenueTrendDirection;
-        if (lastRev === 0) {
-            revenueTrend = currentRev > 0 ? `+₹${currentRev.toLocaleString()} this month` : 'No revenue yet';
-            revenueTrendDirection = currentRev > 0 ? 'up' : 'stable';
-        } else {
-            const revChange = Math.round(((currentRev - lastRev) / lastRev) * 100);
-            revenueTrend = revChange >= 0 ? `+${revChange}% vs last month` : `${revChange}% vs last month`;
-            revenueTrendDirection = revChange > 0 ? 'up' : revChange < 0 ? 'down' : 'stable';
-        }
+        const taskCompletionRate = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+        const tasksTrend = `${taskCompletionRate}% completion rate`;
+        const tasksTrendDirection = taskCompletionRate >= 90 ? 'up' : taskCompletionRate >= 70 ? 'stable' : 'down';
 
         res.json([
             { id: 1, title: 'Total Gyms', value: totalGyms.toString(), trend: gymsTrend, trendDirection: gymsTrendDirection, color: gymsTrendDirection === 'up' ? 'primary' : gymsTrendDirection === 'down' ? 'danger' : 'info' },
             { id: 2, title: 'Total Members', value: totalMembers.toLocaleString(), trend: membersTrend, trendDirection: membersTrendDirection, color: membersTrendDirection === 'up' ? 'success' : membersTrendDirection === 'down' ? 'danger' : 'info' },
             { id: 3, title: 'Active Plans', value: activeSubs.toString(), trend: plansTrend, trendDirection: plansTrendDirection, color: plansTrendDirection === 'up' ? 'success' : plansTrendDirection === 'down' ? 'danger' : 'warning' },
-            { id: 4, title: 'Monthly Revenue', value: `₹${revenueValue.toLocaleString()}`, trend: revenueTrend, trendDirection: revenueTrendDirection, color: revenueTrendDirection === 'up' ? 'success' : revenueTrendDirection === 'down' ? 'danger' : 'info' }
+            { id: 4, title: 'Monthly Revenue', value: `₹${revenueValue.toLocaleString()}`, trend: revenueTrend, trendDirection: revenueTrendDirection, color: revenueTrendDirection === 'up' ? 'success' : revenueTrendDirection === 'down' ? 'danger' : 'info' },
+            { id: 5, title: 'Operational Tasks', value: totalTasks.toString(), trend: tasksTrend, trendDirection: tasksTrendDirection, color: tasksTrendDirection === 'up' ? 'success' : tasksTrendDirection === 'down' ? 'danger' : 'info' }
         ]);
     } catch (error) {
         console.error('Dashboard Cards Error:', error);

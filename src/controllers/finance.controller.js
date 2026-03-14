@@ -508,15 +508,97 @@ const settleInvoice = async (req, res) => {
 
         // Activation logic: If this member has a PT account in 'Pending Payment' status, activate it
         if (updatedInvoice.memberId) {
-            await prisma.pTMemberAccount.updateMany({
+            // Find PT accounts that might need activation or commission
+            // We look for 'Pending Payment' to activate, and also check if it's a PT invoice to trigger commission logic
+            const isPTInvoice = updatedInvoice.notes?.toLowerCase().includes('personal training') || 
+                               updatedInvoice.notes?.toLowerCase().includes('pt package');
+
+            const accountsToProcess = await prisma.pTMemberAccount.findMany({
                 where: {
                     memberId: updatedInvoice.memberId,
-                    status: 'Pending Payment'
+                    OR: [
+                        { status: 'Pending Payment' },
+                        { status: 'Active' } // Catch accounts that might have been activated already
+                    ]
                 },
-                data: {
-                    status: 'Active'
+                include: {
+                    package: true
                 }
             });
+
+            if (accountsToProcess.length > 0) {
+                // Get member and trainer details
+                const member = await prisma.member.findUnique({
+                    where: { id: updatedInvoice.memberId },
+                    include: { trainer: true }
+                });
+
+                // Activate accounts that are pending
+                const pendingAccountIds = accountsToProcess.filter(a => a.status === 'Pending Payment').map(a => a.id);
+                if (pendingAccountIds.length > 0) {
+                    await prisma.pTMemberAccount.updateMany({
+                        where: { id: { in: pendingAccountIds } },
+                        data: { status: 'Active' }
+                    });
+                }
+
+                // Distribute commissions if trainer is assigned AND it's a PT related invoice
+                if (member && member.trainer && isPTInvoice) {
+                    const trainer = member.trainer;
+                    
+                    // Get commission % from trainer config
+                    let commissionPercent = 0;
+                    if (trainer.config) {
+                        try {
+                            const config = typeof trainer.config === 'string' ? JSON.parse(trainer.config) : trainer.config;
+                            commissionPercent = parseFloat(config.commission) || parseFloat(config.commissionPercent) || parseFloat(config.ptSharePercent) || 0;
+                        } catch (e) {
+                            console.error('Error parsing trainer config for commission:', e);
+                        }
+                    }
+
+                    if (commissionPercent > 0) {
+                        for (const account of accountsToProcess) {
+                            // Check if commissions already exist for this invoice and account
+                            const existing = await prisma.commission.findFirst({
+                                where: { invoiceId: updatedInvoice.id, ptAccountId: account.id }
+                            });
+                            
+                            if (existing) continue;
+
+                            const pkg = account.package;
+                            const totalCommission = (parseFloat(pkg.price) * commissionPercent) / 100;
+                            const months = Math.max(1, Math.round(pkg.validityDays / 30));
+                            const monthlyAmount = totalCommission / months;
+                            
+                            const commissionsToCreate = [];
+                            for (let i = 0; i < months; i++) {
+                                const targetDate = new Date();
+                                targetDate.setMonth(targetDate.getMonth() + i);
+                                
+                                commissionsToCreate.push({
+                                    tenantId: updatedInvoice.tenantId,
+                                    trainerId: trainer.id,
+                                    memberId: member.id,
+                                    invoiceId: updatedInvoice.id,
+                                    ptAccountId: account.id,
+                                    amount: monthlyAmount,
+                                    month: targetDate.getMonth() + 1,
+                                    year: targetDate.getFullYear(),
+                                    status: 'Pending',
+                                    description: `Monthly portion for PT Package: ${pkg.name} (Month ${i + 1}/${months})`
+                                });
+                            }
+                            
+                            if (commissionsToCreate.length > 0) {
+                                await prisma.commission.createMany({
+                                    data: commissionsToCreate
+                                });
+                            }
+                        }
+                    }
+                }
+            }
         }
         // Log the payment settlement
         await prisma.auditLog.create({

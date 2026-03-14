@@ -209,12 +209,18 @@ exports.claimReward = async (req, res) => {
                             where: { memberId: String(notes.referrerId) }
                         });
                         if (referrer) {
+                            // Fetch dynamic reward amount from settings
+                            const settings = await prisma.tenantSettings.findUnique({
+                                where: { tenantId: referrer.tenantId }
+                            });
+                            const rewardAmount = settings?.referralReward || 500;
+
                             await prisma.reward.create({
                                 data: {
                                     tenantId: referrer.tenantId,
                                     memberId: referrer.id,
                                     name: "Referral Reward",
-                                    points: 500,
+                                    points: rewardAmount,
                                     description: `Earned for referring ${lead.name}`
                                 }
                             });

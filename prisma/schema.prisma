@@ -30,6 +30,7 @@ model Tenant {
   members           Member[]
   plans             MembershipPlan[]
   payroll           Payroll[]
+  commissions       Commission[]
   users             User[]
   announcements     Announcement[]
   coupons           Coupon[]
@@ -86,6 +87,8 @@ model User {
   assignedMember Member[]     @relation("TrainerToMember")
   assignedTasks  Task[]       @relation("AssignedTasks")
   createdTasks   Task[]       @relation("CreatedTasks")
+  managedTasks   Task[]       @relation("ManagerTasks")
+  performingTasks Task[]      @relation("StaffTasks")
   ptSessions     PTSession[]  @relation("TrainerSessions")
   tenant         Tenant?      @relation(fields: [tenantId], references: [id])
 
@@ -93,6 +96,7 @@ model User {
   receivedMessages ChatMessage[] @relation("ReceivedMessages")
   notifications    Notification[] @relation("UserNotifications")
   payrolls         Payroll[]
+  commissions      Commission[]   @relation("TrainerCommissions")
 
   @@index([tenantId], map: "user_tenantId_fkey")
   @@map("user")
@@ -263,6 +267,7 @@ model Member {
   ptAccounts      PTMemberAccount[]
   ptSessions      PTSession[]
   usedCoupons     UsedCoupon[]
+  commissions     Commission[]
   plan            MembershipPlan?   @relation(fields: [planId], references: [id])
   tenant          Tenant            @relation(fields: [tenantId], references: [id])
   trainer         User?             @relation("TrainerToMember", fields: [trainerId], references: [id])
@@ -615,20 +620,36 @@ model TrainerAvailability {
 model Task {
   id           Int      @id @default(autoincrement())
   title        String
-  assignedToId Int
-  creatorId    Int
-  priority     String
-  dueDate      DateTime
-  status       String   @default("Pending")
   description  String?  @db.Text
+  priority     String   @default("Medium")
+  status       String   @default("Pending") // Pending, In Progress, Completed, Approved
+  dueDate      DateTime
+  
   tenantId     Int?
+  tenant       Tenant? @relation(fields: [tenantId], references: [id])
 
-  assignedTo User    @relation("AssignedTasks", fields: [assignedToId], references: [id])
-  creator    User    @relation("CreatedTasks", fields: [creatorId], references: [id])
-  tenant     Tenant? @relation(fields: [tenantId], references: [id])
+  creatorId    Int
+  creator      User    @relation("CreatedTasks", fields: [creatorId], references: [id])
+
+  managerId    Int?
+  manager      User?   @relation("ManagerTasks", fields: [managerId], references: [id])
+
+  staffId      Int?
+  staff        User?   @relation("StaffTasks", fields: [staffId], references: [id])
+
+  delegationNote String? @db.Text
+  staffDeadline  DateTime?
+
+  assignedToId Int?
+  assignedTo   User?    @relation("AssignedTasks", fields: [assignedToId], references: [id])
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   @@index([assignedToId], map: "Task_assignedToId_fkey")
   @@index([creatorId], map: "Task_creatorId_fkey")
+  @@index([managerId])
+  @@index([staffId])
   @@map("task")
 }
 
@@ -739,6 +760,8 @@ model TenantSettings {
   // Google Reviews
   googleBusinessEnabled Boolean @default(false)
   googleReviewLink      String? @db.Text
+
+  referralReward Int @default(500)
 
   @@map("tenantsettings")
 }
@@ -1040,4 +1063,28 @@ model ChatMessage {
   @@index([senderId])
   @@index([receiverId])
   @@map("chat_message")
+}
+
+model Commission {
+  id             Int      @id @default(autoincrement())
+  tenantId       Int
+  trainerId      Int
+  memberId       Int?
+  invoiceId      Int?
+  ptAccountId    Int?
+  amount         Decimal  @db.Decimal(10, 2)
+  month          Int      // 1-12
+  year           Int
+  status         String   @default("Pending") // Pending, AddedToPayroll, Paid
+  description    String?  @db.Text
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  trainer User    @relation("TrainerCommissions", fields: [trainerId], references: [id])
+  tenant  Tenant  @relation(fields: [tenantId], references: [id])
+  member  Member? @relation(fields: [memberId], references: [id])
+
+  @@index([trainerId])
+  @@index([tenantId])
+  @@map("commission")
 }

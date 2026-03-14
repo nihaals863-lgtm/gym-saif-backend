@@ -17,11 +17,14 @@ const calculateDurationInMinutes = (checkIn, checkOut) => {
 const generatePayroll = async (req, res) => {
     try {
         const tenantId = req.user.tenantId;
-        const { year, month, staffIds } = req.body;
+        let { year, month, staffIds } = req.body;
 
         if (!year || !month) {
             return res.status(400).json({ error: 'Year and month are required' });
         }
+
+        year = parseInt(year);
+        month = parseInt(month);
 
         // 1. Fetch staff for the branch — filter by provided staffIds if given
         const staffWhereClause = {
@@ -81,61 +84,69 @@ const generatePayroll = async (req, res) => {
             const baseSalary = staff.baseSalary ? parseFloat(staff.baseSalary) : 0;
             const dailySalary = baseSalary / daysInMonth;
             
-            // Extract commission from config if base field does not have it, simplified here to use config
-            let commissionPercent = 0;
-            if (staff.config) {
-                try {
-                    const config = JSON.parse(staff.config);
-                    commissionPercent = config.commissionPercent || config.commission || 0;
-                } catch (e) { }
-            }
-            const commissionAmount = (baseSalary * commissionPercent) / 100;
-            const leaveDeduction = leaveDays * dailySalary;
-            
-            const netPay = (baseSalary + commissionAmount) - leaveDeduction;
-
-            // Upsert the generated payroll to save as "Pending"
-            const result = await prisma.payroll.upsert({
+            // Fetch Distributed PT Commissions for this month/year
+            const ptCommissions = await prisma.commission.findMany({
                 where: {
-                    // Need a unique constraint logically, but upsert needs a unique field. 
-                    // Let's use first matching record or create
-                    id: -1 // Since we don't have a unique constraint on (staffId, year, month), we will use findFirst then update/create
-                },
-                update: {},
-                create: {
+                    trainerId: staff.id,
                     tenantId,
-                    staffId: staff.id,
-                    baseSalary,
-                    attendanceDays,
-                    leaveDays,
-                    commission: commissionAmount,
-                    leaveDeduction,
-                    amount: netPay > 0 ? netPay : 0,
-                    year,
                     month,
+                    year,
                     status: 'Pending'
                 }
-            }).catch(async (e) => {
-                 // Fallback since prisma upsert fails on -1 id finding
-                 const existingRecord = await prisma.payroll.findFirst({
-                     where: { staffId: staff.id, year, month, tenantId }
-                 });
-
-                 if (existingRecord) {
-                     return await prisma.payroll.update({
-                         where: { id: existingRecord.id },
-                         data: {
-                             baseSalary, attendanceDays, leaveDays, commission: commissionAmount, leaveDeduction, amount: netPay > 0 ? netPay : 0, status: 'Pending'
-                         }
-                     });
-                 } else {
-                     return await prisma.payroll.create({
-                        data: {
-                            tenantId, staffId: staff.id, baseSalary, attendanceDays, leaveDays, commission: commissionAmount, leaveDeduction, amount: netPay > 0 ? netPay : 0, year, month, status: 'Pending'
-                        }
-                     });
-                 }
             });
+
+            const ptCommissionSum = ptCommissions.reduce((acc, comm) => acc + parseFloat(comm.amount), 0);
+
+            // Total Commission = PT Distributed items sum only (Rounded to nearest integer as requested)
+            const commissionAmount = Math.round(ptCommissionSum);
+
+            const leaveDeduction = isNaN(leaveDays * dailySalary) ? 0 : (leaveDays * dailySalary);
+            
+            const netPay = (baseSalary + commissionAmount) - leaveDeduction;
+            const finalAmount = isNaN(netPay) ? 0 : (netPay > 0 ? netPay : 0);
+
+            // Fetch existing record to avoid duplicate entries for same month/year
+            const existingRecord = await prisma.payroll.findFirst({
+                where: {
+                    staffId: staff.id,
+                    tenantId,
+                    month,
+                    year
+                }
+            });
+
+            let result;
+            if (existingRecord) {
+                result = await prisma.payroll.update({
+                    where: { id: existingRecord.id },
+                    data: {
+                        baseSalary,
+                        attendanceDays,
+                        leaveDays: isNaN(leaveDays) ? 0 : leaveDays,
+                        commission: isNaN(commissionAmount) ? 0 : commissionAmount,
+                        leaveDeduction,
+                        amount: finalAmount,
+                        status: 'Approved'
+                    }
+                });
+            } else {
+                result = await prisma.payroll.create({
+                    data: {
+                        tenantId,
+                        staffId: staff.id,
+                        baseSalary,
+                        attendanceDays,
+                        leaveDays: isNaN(leaveDays) ? 0 : leaveDays,
+                        commission: isNaN(commissionAmount) ? 0 : commissionAmount,
+                        leaveDeduction,
+                        extra_bonus: 0,
+                        amount: finalAmount,
+                        year,
+                        month,
+                        status: 'Approved'
+                    }
+                });
+            }
 
             payrollResults.push(result);
         }

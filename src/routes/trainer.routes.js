@@ -17,6 +17,7 @@ const {
     getSessionHistory,
     getMemberPayments,
     getEarnings,
+    updatePayrollStatus,
     getAttendance,
     checkInTrainer,
     requestLeave,
@@ -69,6 +70,7 @@ router.patch('/tasks/:id/status', updateTaskStatus);
 
 // Earnings
 router.get('/earnings', getEarnings);
+router.patch('/payroll/:id/status', updatePayrollStatus);
 
 // Attendance
 router.get('/attendance', getAttendance);

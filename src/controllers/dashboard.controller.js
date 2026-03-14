@@ -75,30 +75,50 @@ exports.getManagerDashboard = async (req, res) => {
         });
 
         // Fetch Tasks and Notices
-        const [maintenanceTasks, pendingTasks] = await Promise.all([
+        const [maintenanceTasks, taskCounts, overdueTasksCount, recentTasks] = await Promise.all([
             // 1. Maintenance Requests
             prisma.maintenanceRequest.findMany({
                 where: { equipment: { tenantId }, status: { notIn: ['Resolved', 'Completed'] } },
                 take: 2,
                 include: { equipment: true }
             }).catch(() => []),
-            // 2. Pending Standard Tasks assigned within tenant
+            // 2. Task Stats
+            prisma.task.groupBy({
+                by: ['status'],
+                where: { tenantId },
+                _count: { id: true }
+            }),
+            // 3. Overdue Tasks
+            prisma.task.count({
+                where: { tenantId, status: { notIn: ['Completed', 'Approved'] }, dueDate: { lt: today } }
+            }),
+            // 4. Recent Tasks for "Tasks and Notices" section
             prisma.task.findMany({
-                where: { tenantId, status: 'Pending' },
-                take: 3,
+                where: { tenantId, status: { notIn: ['Approved'] } },
+                take: 5,
                 orderBy: { dueDate: 'asc' }
             }).catch(() => [])
         ]);
 
+        const taskStats = {
+            total: taskCounts.reduce((acc, curr) => acc + curr._count.id, 0),
+            pending: taskCounts.find(t => t.status === 'Pending')?._count.id || 0,
+            inProgress: taskCounts.find(t => t.status === 'In Progress')?._count.id || 0,
+            completed: taskCounts.find(t => t.status === 'Completed')?._count.id || 0,
+            approved: taskCounts.find(t => t.status === 'Approved')?._count.id || 0,
+            overdue: overdueTasksCount
+        };
+
         const tasksAndNotices = [];
 
-        pendingTasks.forEach(t => {
+        recentTasks.forEach(t => {
             tasksAndNotices.push({
                 id: `t_${t.id}`,
                 type: t.priority === 'High' ? 'urgent' : 'notice',
                 title: t.title,
                 description: t.description || 'Pending task completion.',
-                dueDate: new Date(t.dueDate).toLocaleDateString()
+                dueDate: new Date(t.dueDate).toLocaleDateString(),
+                status: t.status
             });
         });
 
@@ -148,7 +168,8 @@ exports.getManagerDashboard = async (req, res) => {
                 operational,
                 outOfOrder
             },
-            tasksAndNotices
+            tasksAndNotices,
+            taskStats
         });
     } catch (error) {
         console.error('Manager Dashboard Error:', error);

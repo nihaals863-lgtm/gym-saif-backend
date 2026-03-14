@@ -39,6 +39,7 @@ const {
     updateTaskStatus,
     updateTask,
     createTask,
+    delegateTask,
     getTaskById,
     deleteTask,
     assignTask,
@@ -136,6 +137,7 @@ router.get('/tasks/:id', getTaskById);
 router.patch('/tasks/:id/status', updateTaskStatus);
 router.patch('/tasks/:id', updateTask);
 router.post('/tasks', createTask);
+router.post('/tasks/:id/delegate', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), delegateTask);
 router.delete('/tasks/:id', deleteTask);
 router.post('/tasks/assign', assignTask);
 

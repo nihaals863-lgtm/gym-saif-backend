@@ -616,26 +616,48 @@ const getEarnings = async (req, res) => {
                 }
             });
 
+            // Fetch actual Commissions for this month/year
+            const commissions = await prisma.commission.findMany({
+                where: {
+                    trainerId: id,
+                    month: m + 1,
+                    year: year
+                }
+            });
+
+            const monthCommissionTotal = Math.round(commissions.reduce((acc, comm) => acc + parseFloat(comm.amount), 0));
+
             // If payroll exists, use those values, else calculate estimates
-            const finalBase = payroll ? parseFloat(payroll.amount) : salary;
-            const finalCommission = payroll ? 0 : commissionFixed; // Assuming commission is handled or not in payroll record for now
-            const pfDeduction = (finalBase + sessionEarnings + finalCommission) * 0.12; // 12% PF Mock
-            const total = (finalBase + sessionEarnings + finalCommission) - pfDeduction;
+            const finalBase = payroll ? parseFloat(payroll.baseSalary) : salary;
+            const finalCommission = payroll ? parseFloat(payroll.commission) : monthCommissionTotal;
+            const finalBonus = payroll ? parseFloat(payroll.extra_bonus || 0) : 0;
+            const finalDeduction = payroll ? parseFloat(payroll.leaveDeduction) : 0;
+            
+            const total = (finalBase + finalCommission + finalBonus) - finalDeduction;
 
             history.push({
-                id: `${year}-${m}`,
+                id: payroll ? payroll.id : `${year}-${m}`,
                 year: year.toString(),
                 month: `${monthName} ${year}`,
                 baseSalary: finalBase,
                 sessionCount,
                 sessionRate,
-                sessionEarnings,
+                sessionEarnings, // Note: sessions are currently added independently in this view, 
+                                // but instructions say Payroll should include monthly commission portion.
+                                // I'll keep sessionEarnings separate in UI if it's treated as extra, 
+                                // but usually sessions are also part of commission or base.
                 commission: finalCommission,
-                bonus: 0,
-                pfDeduction: Math.round(pfDeduction),
+                bonus: finalBonus,
+                leaveDeduction: finalDeduction,
+                pfDeduction: 0,
                 total: Math.round(total),
-                status: payroll ? 'Paid' : (isCurrentMonth ? 'Pending' : 'Processed'),
-                details: [] // Could fetch individual sessions if needed, but summary is usually enough for history item
+                status: payroll ? payroll.status : (isCurrentMonth ? 'Pending' : 'Processed'),
+                rejectionReason: payroll?.rejectionReason || null,
+                details: commissions.map(c => ({
+                    description: c.description,
+                    amount: c.amount,
+                    status: c.status
+                }))
             });
         }
 
@@ -648,21 +670,54 @@ const getEarnings = async (req, res) => {
                 sessionCount: currentMonthData.sessionCount,
                 sessionEarnings: currentMonthData.sessionEarnings,
                 currentMonthCommission: currentMonthData.commission,
-                pfDeduction: currentMonthData.pfDeduction,
-                currentMonthTotal: currentMonthData.total,
-                currency: '₹',
-                currentMonthName: fullMonths[currentMonth],
-                trainerName: req.user.name,
-                trainerCode: `TRN-${id}`,
-                branchName: req.user.tenant?.name || 'Main Branch',
-                department: req.user.department || 'Training',
-                position: parsedConfig.position || 'Personal Trainer'
+                totalEarnings: currentMonthData.total,
+                status: currentMonthData.status
             },
-            history: history
+            history
         };
+
         res.json(earningsData);
     } catch (error) {
-        console.error("getEarnings error:", error);
+        console.error('getEarnings Error:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const updatePayrollStatus = async (req, res) => {
+    try {
+        const { id } = req.params; // Payroll ID
+        const { status, rejectionReason } = req.body;
+        const trainerId = req.user.id;
+
+        if (!['Confirmed', 'Rejected'].includes(status)) {
+            return res.status(400).json({ message: 'Invalid status update for trainer' });
+        }
+
+        const payroll = await prisma.payroll.findUnique({
+            where: { id: parseInt(id) }
+        });
+
+        if (!payroll) return res.status(404).json({ message: 'Payroll record not found' });
+        if (payroll.staffId !== trainerId) {
+            return res.status(403).json({ message: 'Not authorized to update this payroll' });
+        }
+
+        // Only Approved payrolls can be confirmed or rejected by trainer
+        if (payroll.status !== 'Approved' && payroll.status !== 'Rejected') {
+            return res.status(400).json({ message: `Cannot update payroll with status: ${payroll.status}` });
+        }
+
+        const updatedPayroll = await prisma.payroll.update({
+            where: { id: parseInt(id) },
+            data: {
+                status,
+                rejectionReason: status === 'Rejected' ? rejectionReason : null
+            }
+        });
+
+        res.json({ message: `Payroll ${status} successfully`, payroll: updatedPayroll });
+    } catch (error) {
+        console.error('updatePayrollStatus Error:', error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -1307,15 +1362,17 @@ const getTrainerDashboardStats = async (req, res) => {
         const sessionRate = parsedConfig.hourlyRate || 500;
         const commissionFixed = parsedConfig.commission || 0;
 
-        // Current month PT sessions earnings
-        const monthlySessions = await prisma.pTSession.count({
+        // Fetch Distributed PT Commissions for current month
+        const ptCommissions = await prisma.commission.findMany({
             where: {
-                ...whereBase,
-                status: 'Completed',
-                date: { gte: startOfMonth, lt: tomorrow }
+                trainerId: trainerId,
+                month: today.getMonth() + 1,
+                year: today.getFullYear(),
+                status: 'Pending'
             }
         });
-        const monthlyCommission = (monthlySessions * sessionRate) + (activeGeneralClients * commissionFixed);
+        const ptCommissionSum = ptCommissions.reduce((acc, comm) => acc + parseFloat(comm.amount), 0);
+        const monthlyCommission = Math.round(ptCommissionSum);
 
         // Attendance stats for current month
         const monthlyAttendanceLogs = await prisma.attendance.count({
@@ -1350,6 +1407,7 @@ const getTrainerDashboardStats = async (req, res) => {
     }
 };
 
+
 module.exports = {
     getProfile,
     updateProfile,
@@ -1367,6 +1425,7 @@ module.exports = {
     getSessionHistory,
     getMemberPayments,
     getEarnings,
+    updatePayrollStatus,
     getAttendance,
     checkInTrainer,
     requestLeave,

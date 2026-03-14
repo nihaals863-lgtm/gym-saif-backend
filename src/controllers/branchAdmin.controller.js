@@ -28,7 +28,7 @@ const getDashboardStats = async (req, res) => {
         const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
         const nextWeek = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
 
-        const [totalMembers, activeTrainers, todaysCheckIns, revenueInvoice, revenueStore, newLeads, todaysClassesCount, pendingApprovalsCount, equipmentData, defaulterCheckIns, expiringSoonCount] = await Promise.all([
+        const [totalMembers, activeTrainers, todaysCheckIns, revenueInvoice, revenueStore, newLeads, todaysClassesCount, pendingApprovalsCount, equipmentData, defaulterCheckIns, expiringSoonCount, taskCounts, overdueTasks] = await Promise.all([
             // 1. Total Members
             prisma.member.count({ where: whereClause }),
             // 2. Active Trainers
@@ -50,8 +50,31 @@ const getDashboardStats = async (req, res) => {
             // 9. Security Risks
             prisma.attendance.count({ where: { ...whereClause, user: { status: 'Inactive' }, checkIn: { gte: startOfDay } } }),
             // 10. Expiring Soon
-            prisma.member.count({ where: { ...whereClause, status: 'Active', expiryDate: { gte: startOfDay, lte: nextWeek } } })
+            prisma.member.count({ where: { ...whereClause, status: 'Active', expiryDate: { gte: startOfDay, lte: nextWeek } } }),
+            // 11. Task Counts
+            prisma.task.groupBy({
+                by: ['status'],
+                where: whereClause,
+                _count: { id: true }
+            }),
+            // 12. Overdue Tasks
+            prisma.task.count({
+                where: {
+                    ...whereClause,
+                    status: { notIn: ['Completed', 'Approved'] },
+                    dueDate: { lt: now }
+                }
+            })
         ]);
+
+        const taskStats = {
+            total: taskCounts.reduce((acc, curr) => acc + curr._count.id, 0),
+            pending: taskCounts.find(t => t.status === 'Pending')?._count.id || 0,
+            inProgress: taskCounts.find(t => t.status === 'In Progress')?._count.id || 0,
+            completed: taskCounts.find(t => t.status === 'Completed')?._count.id || 0,
+            approved: taskCounts.find(t => t.status === 'Approved')?._count.id || 0,
+            overdue: overdueTasks
+        };
 
         const totalMonthlyRevenue = (Number(revenueInvoice._sum.amount) || 0) + (Number(revenueStore._sum.total) || 0);
 
@@ -253,8 +276,8 @@ const getDashboardStats = async (req, res) => {
             },
             netProfit: storeNetProfit,
             storeSales: Number(revenueStore._sum.total || 0),
-            recentFeedback
-
+            recentFeedback,
+            taskStats
         });
 
     } catch (error) {
