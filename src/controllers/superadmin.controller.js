@@ -450,6 +450,36 @@ const fetchDashboardCards = async (req, res) => {
         const tasksTrend = `${taskCompletionRate}% completion rate`;
         const tasksTrendDirection = taskCompletionRate >= 90 ? 'up' : taskCompletionRate >= 70 ? 'stable' : 'down';
 
+        // --- REVENUE ---
+        const totalRevenue = await prisma.saasPayment.aggregate({
+            where: { status: 'Success' },
+            _sum: { amount: true }
+        });
+        const revenueValue = totalRevenue._sum.amount || 0;
+
+        const revenueThisMonth = await prisma.saasPayment.aggregate({
+            where: { status: 'Success', date: { gte: currentMonthStart } },
+            _sum: { amount: true }
+        });
+        const revenueLastMonth = await prisma.saasPayment.aggregate({
+            where: { status: 'Success', date: { gte: previousMonthStart, lte: previousMonthEnd } },
+            _sum: { amount: true }
+        });
+
+        const revThis = parseFloat(revenueThisMonth._sum.amount || 0);
+        const revLast = parseFloat(revenueLastMonth._sum.amount || 0);
+
+        let revenueTrend;
+        let revenueTrendDirection;
+        if (revLast === 0) {
+            revenueTrend = revThis > 0 ? `+₹${revThis.toLocaleString()} new` : 'No revenue';
+            revenueTrendDirection = revThis > 0 ? 'up' : 'stable';
+        } else {
+            const revChange = Math.round(((revThis - revLast) / revLast) * 100);
+            revenueTrend = revChange >= 0 ? `+${revChange}% vs last month` : `${revChange}% vs last month`;
+            revenueTrendDirection = revChange > 0 ? 'up' : revChange < 0 ? 'down' : 'stable';
+        }
+
         res.json([
             { id: 1, title: 'Total Gyms', value: totalGyms.toString(), trend: gymsTrend, trendDirection: gymsTrendDirection, color: gymsTrendDirection === 'up' ? 'primary' : gymsTrendDirection === 'down' ? 'danger' : 'info' },
             { id: 2, title: 'Total Members', value: totalMembers.toLocaleString(), trend: membersTrend, trendDirection: membersTrendDirection, color: membersTrendDirection === 'up' ? 'success' : membersTrendDirection === 'down' ? 'danger' : 'info' },

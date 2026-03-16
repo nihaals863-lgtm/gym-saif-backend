@@ -1073,7 +1073,7 @@ exports.getAvailableCoupons = async (req, res) => {
         // Find the member record
         const memberRaw = await prisma.$queryRaw`SELECT * FROM member WHERE userId = ${userId}`;
         const member = memberRaw[0];
-        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+        if (!member) return res.json([]);
 
         const now = new Date();
 

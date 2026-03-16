@@ -28,7 +28,14 @@ const getProgress = async (req, res) => {
         }
 
         if (!member) {
-            return res.status(404).json({ message: 'Member profile not found' });
+            return res.json({
+                logs: [],
+                targets: {
+                    weight: null,
+                    bodyFat: null,
+                    goal: null
+                }
+            });
         }
 
         // Authorization Check
@@ -89,7 +96,14 @@ const getMemberProgressById = async (req, res) => {
         });
 
         if (!member) {
-            return res.status(404).json({ message: 'Member not found' });
+            return res.json({
+                logs: [],
+                targets: {
+                    weight: null,
+                    bodyFat: null,
+                    goal: null
+                }
+            });
         }
 
         // Authorization Check

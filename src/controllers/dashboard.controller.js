@@ -231,7 +231,7 @@ exports.getStaffDashboard = async (req, res) => {
             prisma.payroll.findMany({
                 where: { tenantId, status: 'Approved' },
                 take: 2,
-                orderBy: { createdAt: 'desc' }
+                orderBy: { id: 'desc' }
             }),
             prisma.lead.findMany({
                 where: { tenantId, status: 'New' },

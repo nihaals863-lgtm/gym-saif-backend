@@ -17,7 +17,7 @@ const cancelMembership = async (req, res) => {
     try {
         // Find member associated with this user
         const member = await prisma.member.findUnique({ where: { userId: req.user.id } });
-        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+        if (!member) return res.json({ message: 'Member profile not found', status: 'No Profile' });
 
         await prisma.member.update({
             where: { id: member.id },
@@ -32,7 +32,7 @@ const cancelMembership = async (req, res) => {
 const getWalletTransactions = async (req, res) => {
     try {
         const member = await prisma.member.findUnique({ where: { userId: req.user.id } });
-        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+        if (!member) return res.json({ message: 'Member profile not found', status: 'No Profile' });
 
         const wallet = await prisma.wallet.findUnique({
             where: { memberId: member.id },
@@ -57,7 +57,7 @@ const addWalletCredit = async (req, res) => {
     try {
         const { amount } = req.body;
         const member = await prisma.member.findUnique({ where: { userId: req.user.id } });
-        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+        if (!member) return res.json({ message: 'Member profile not found', status: 'No Profile' });
 
         let wallet = await prisma.wallet.findUnique({ where: { memberId: member.id } });
         if (!wallet) {
@@ -90,7 +90,7 @@ const addWalletCredit = async (req, res) => {
 const getMyBookings = async (req, res) => {
     try {
         const member = await prisma.member.findUnique({ where: { userId: req.user.id } });
-        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+        if (!member) return res.json([]);
 
         const [bookings, ptSessions] = await Promise.all([
             prisma.booking.findMany({
@@ -160,7 +160,7 @@ const createPTBooking = async (req, res) => {
         const member = await prisma.member.findUnique({
             where: { userId: req.user.id }
         });
-        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+        if (!member) return res.json({ message: 'Member profile not found', status: 'No Profile' });
         if (member.status !== 'Active') {
             return res.status(400).json({ message: 'You can only book PT sessions with an Active membership status.' });
         }
@@ -214,7 +214,7 @@ const createBooking = async (req, res) => {
             where: { userId: req.user.id },
             include: { plan: true }
         });
-        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+        if (!member) return res.json({ message: 'Member profile not found', status: 'No Profile' });
         if (member.status !== 'Active') {
             return res.status(400).json({ message: 'You can only book sessions with an Active membership status.' });
         }
@@ -397,7 +397,7 @@ const getInvoices = async (req, res) => {
     try {
         const memberRaw = await prisma.$queryRaw`SELECT * FROM member WHERE userId = ${req.user.id}`;
         const member = memberRaw[0];
-        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+        if (!member) return res.json([]);
 
         const invoices = await prisma.invoice.findMany({
             where: { tenantId: member.tenantId, memberId: member.id },
@@ -471,7 +471,7 @@ const payInvoice = async (req, res) => {
         const { id } = req.params; // this is the dbId passed by the frontend
         const memberRaw = await prisma.$queryRaw`SELECT * FROM member WHERE userId = ${req.user.id}`;
         const member = memberRaw[0];
-        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+        if (!member) return res.json({ message: 'Member profile not found', status: 'No Profile' });
 
         await prisma.$transaction(async (tx) => {
             const invoice = await tx.invoice.findFirst({
@@ -504,7 +504,7 @@ const failPayment = async (req, res) => {
         const { id } = req.params;
         const memberRaw = await prisma.$queryRaw`SELECT * FROM member WHERE userId = ${req.user.id}`;
         const member = memberRaw[0];
-        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+        if (!member) return res.json({ message: 'Member profile not found', status: 'No Profile' });
 
         await prisma.invoice.update({
             where: { id: parseInt(id), memberId: member.id },
@@ -523,7 +523,7 @@ const getWalletBalance = async (req, res) => {
             where: { userId: req.user.id },
             include: { Reward: true }
         });
-        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+        if (!member) return res.json({ message: 'Member profile not found', status: 'No Profile' });
 
         const wallet = await prisma.wallet.findUnique({
             where: { memberId: member.id },
@@ -554,7 +554,7 @@ const getSavedCards = async (req, res) => {
     try {
         const memberRaw = await prisma.$queryRaw`SELECT * FROM member WHERE userId = ${req.user.id}`;
         const member = memberRaw[0];
-        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+        if (!member) return res.json([]);
 
         let cards = [];
         if (member.cards) {
@@ -571,7 +571,7 @@ const addSavedCard = async (req, res) => {
     try {
         const memberRaw = await prisma.$queryRaw`SELECT * FROM member WHERE userId = ${req.user.id}`;
         const member = memberRaw[0];
-        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+        if (!member) return res.json({ message: 'Member profile not found', status: 'No Profile' });
 
         let existingCards = [];
         if (member.cards) {
@@ -595,7 +595,7 @@ const deleteSavedCard = async (req, res) => {
         const { id } = req.params;
         const memberRaw = await prisma.$queryRaw`SELECT * FROM member WHERE userId = ${req.user.id}`;
         const member = memberRaw[0];
-        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+        if (!member) return res.json({ message: 'Member profile not found', status: 'No Profile' });
 
         let existingCards = [];
         if (member.cards) {
@@ -625,7 +625,7 @@ const getMembershipDetails = async (req, res) => {
         });
 
         if (!member) {
-            return res.status(404).json({ message: 'Member profile not found' });
+            return res.json({ id: null, currentPlan: 'No Active Plan', status: 'No Profile', daysRemaining: 0 });
         }
 
         const daysRemaining = member.expiryDate ? Math.max(0, Math.floor((new Date(member.expiryDate) - new Date()) / (1000 * 60 * 60 * 24))) : 0;
@@ -655,7 +655,7 @@ const getPTAccounts = async (req, res) => {
         });
 
         if (!member) {
-            return res.status(404).json({ message: 'Member profile not found' });
+            return res.json([]); // Return empty list instead of 404
         }
 
         const ptAccounts = await prisma.pTMemberAccount.findMany({
@@ -698,7 +698,7 @@ const getServiceRequests = async (req, res) => {
         });
 
         if (!member) {
-            return res.status(404).json({ message: 'Member not found' });
+            return res.json([]);
         }
 
         const requests = await prisma.serviceRequest.findMany({
@@ -776,7 +776,7 @@ const addServiceRequest = async (req, res) => {
         });
 
         if (!member) {
-            return res.status(404).json({ message: 'Member not found' });
+            return res.json({ success: false, message: 'Member profile not found' });
         }
 
         const { type, details, status, rawType } = req.body;
@@ -813,7 +813,7 @@ const getMemberProfile = async (req, res) => {
         });
 
         if (!member) {
-            return res.status(404).json({ message: 'Member profile not found' });
+            return res.json({ name: req.user.name, email: req.user.email, status: 'No Profile', benefitWallet: { classCredits: 0, saunaSessions: 0, iceBathCredits: 0 } });
         }
 
         let benefits = [];
@@ -894,7 +894,7 @@ const updateMemberProfile = async (req, res) => {
             where: { userId: req.user.id }
         });
 
-        if (!member) return res.status(404).json({ message: 'Member not found' });
+        if (!member) return res.json([]);
 
         let avatarUrl = avatar;
         if (avatar && avatar.startsWith('data:image')) {
@@ -979,7 +979,7 @@ const getWorkoutPlans = async (req, res) => {
         }
 
         if (!member) {
-            return res.status(404).json({ message: 'Member not found' });
+            return res.json([]);
         }
 
         // Authorization Check for Management
@@ -1035,7 +1035,7 @@ const getDietPlans = async (req, res) => {
         }
 
         if (!member) {
-            return res.status(404).json({ message: 'Member not found' });
+            return res.json([]);
         }
 
         // Authorization Check for Management
@@ -1078,8 +1078,17 @@ const getMemberAttendance = async (req, res) => {
         const member = await prisma.member.findUnique({
             where: { userId: req.user.id }
         });
-
-        if (!member) return res.status(404).json({ message: 'Member not found' });
+        if (!member) {
+            return res.json({
+                logs: [],
+                stats: {
+                    totalVisits: 0,
+                    visitsThisMonth: 0,
+                    avgDuration: '--',
+                    consistency: '0%'
+                }
+            });
+        }
 
         const attendance = await prisma.attendance.findMany({
             where: { memberId: member.id },
@@ -1132,7 +1141,7 @@ const getRewardCatalog = async (req, res) => {
     try {
         const memberRaw = await prisma.$queryRaw`SELECT * FROM member WHERE userId = ${req.user.id}`;
         const member = memberRaw[0];
-        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+        if (!member) return res.json({ message: 'Member profile not found', status: 'No Profile' });
 
         const catalog = await prisma.rewardCatalog.findMany({
             where: { tenantId: member.tenantId, status: 'Active' },
@@ -1231,7 +1240,7 @@ const getMyReferrals = async (req, res) => {
         });
 
         if (!member) {
-            return res.status(404).json({ message: 'Member not found' });
+            return res.json({ referralCode: null, referrals: [], stats: { referralsSent: 0, successfulSignups: 0, rewardsEarned: 0, pendingRewards: 0 } });
         }
 
         const rawLeads = await prisma.lead.findMany({
@@ -1322,7 +1331,18 @@ const getMemberDashboard = async (req, res) => {
             }
         });
 
-        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+        if (!member) {
+            // Return a default empty dashboard instead of 404 to keep UI stable
+            return res.json({
+                memberInfo: { name: req.user.name, status: 'No Profile' },
+                membership: { planName: 'None', daysRemaining: 0 },
+                stats: { ptSessionsRemaining: 0, visitsThisMonth: 0, pendingDues: 0 },
+                recentAttendance: [],
+                upcomingClass: null,
+                announcements: [],
+                notifications: []
+            });
+        }
 
         // Calculate visits this month
         const now = new Date();
@@ -1428,7 +1448,7 @@ const memberCheckIn = async (req, res) => {
             where: { userId: req.user.id },
             include: { plan: true }
         });
-        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+        if (!member) return res.json({ message: 'Member profile not found', status: 'No Profile' });
 
         if (member.status === 'Expired') return res.status(403).json({ message: 'Membership expired. Please renew.' });
         if (member.status !== 'Active') return res.status(403).json({ message: `Membership is currently ${member.status}` });
@@ -1468,7 +1488,7 @@ const memberCheckIn = async (req, res) => {
 const memberCheckOut = async (req, res) => {
     try {
         const member = await prisma.member.findUnique({ where: { userId: req.user.id } });
-        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+        if (!member) return res.json({ message: 'Member profile not found', status: 'No Profile' });
 
         const activeRecord = await prisma.attendance.findFirst({
             where: { memberId: member.id, checkOut: null, type: 'Member' },
@@ -1491,7 +1511,7 @@ const memberCheckOut = async (req, res) => {
 const getMemberCheckInStatus = async (req, res) => {
     try {
         const member = await prisma.member.findUnique({ where: { userId: req.user.id } });
-        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+        if (!member) return res.json({ message: 'Member profile not found', status: 'No Profile' });
 
         const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
         const todayEnd = new Date(); todayEnd.setHours(23, 59, 59, 999);
@@ -1520,7 +1540,7 @@ const requestDietPlan = async (req, res) => {
         });
 
         if (!member) {
-            return res.status(404).json({ message: 'Member not found' });
+            return res.json({ success: false, message: 'Member profile not found' });
         }
 
         // Check if there's already a pending diet plan request
