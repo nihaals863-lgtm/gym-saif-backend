@@ -736,6 +736,7 @@ model TenantSettings {
   logo            String?
   timezone        String  @default("UTC")
   currency        String  @default("USD")
+  email           String?
   whatsappEnabled Boolean @default(false)
   fiscalYearStart String  @default("April")
 

@@ -9,16 +9,25 @@ const transformImagePath = (path) => {
 
 const getDashboardSummary = async (req, res) => {
     try {
-        const response = await aiotApi.get('/getAllAcCheckRecordCount');
-        const { data } = response;
+        const [recordsRes, deviceListRes] = await Promise.all([
+            aiotApi.get('/getAllAcCheckRecordCount'),
+            aiotApi.get('/through/device/getDeviceList')
+        ]);
+        
+        const { data } = recordsRes;
+        const deviceList = deviceListRes.rows || [];
 
         if (!data) {
             return res.status(500).json({ message: 'No data received from AIoT system' });
         }
 
+        // Calculate counts from master device list for accuracy
+        const onlineCount = deviceList.filter(d => d.onlineFlag === 1).length;
+        const offlineCount = deviceList.length - onlineCount;
+
         const result = {
-            onlineCount: data.onlineMap?.onlineCount || 0,
-            offlineCount: data.onlineMap?.offlineCount || 0,
+            onlineCount: onlineCount,
+            offlineCount: offlineCount,
             totalCountToday: data.acCheckRecordMap?.totalCount || 0,
             totalCountAll: data.acCheckRecordMap?.totalCountTal || 0,
             employeeCountToday: data.acCheckRecordMap?.employeeCount || 0,
@@ -48,34 +57,30 @@ const getDashboardSummary = async (req, res) => {
 
 const getDeviceList = async (req, res) => {
     try {
-        const [recordsRes, configRes] = await Promise.all([
+        const [deviceListRes, recordsRes, configRes] = await Promise.all([
+            aiotApi.get('/through/device/getDeviceList'),
             aiotApi.get('/getAllAcCheckRecordCount'),
             aiotApi.get('/through/device/getDeviceTypeConfig')
         ]);
 
-        const { data } = recordsRes;
+        const deviceList = deviceListRes.rows || [];
+        const { data: recordData } = recordsRes;
         const connectionType = configRes.data; // e.g., "wan"
 
-        if (!data) {
-            return res.status(500).json({ message: 'Failed to retrieve device data from AIoT system' });
-        }
-
-        const devices = [];
-        if (data.acCheckRecordList && data.acCheckRecordList.length > 0) {
-            const uniqueDeviceKeys = [...new Set(data.acCheckRecordList.map(r => r.deviceKey))];
-            uniqueDeviceKeys.forEach(key => {
-                const lastRecord = data.acCheckRecordList.find(r => r.deviceKey === key);
-                devices.push({
-                    deviceName: lastRecord.deviceName,
-                    deviceKey: lastRecord.deviceKey,
-                    status: (data.onlineMap?.onlineCount > 0) ? 'online' : 'offline',
-                    connectionType: connectionType?.toUpperCase() || 'WAN',
-                    todayEntries: data.acCheckRecordMap?.totalCount || 0,
-                    lastSeen: lastRecord.createTime,
-                    lastPersonName: lastRecord.personName
-                });
-            });
-        }
+        const devices = deviceList.map(device => {
+            // Try to find the last record for this device to get extra info if available
+            const lastRecord = recordData?.acCheckRecordList?.find(r => r.deviceKey === device.deviceKey);
+            
+            return {
+                deviceName: device.deviceName,
+                deviceKey: device.deviceKey,
+                status: device.onlineFlag === 1 ? 'online' : 'offline',
+                connectionType: connectionType?.toUpperCase() || 'WAN',
+                todayEntries: lastRecord ? (recordData.acCheckRecordMap?.totalCount || 0) : 0,
+                lastSeen: device.lastActiveTime || lastRecord?.createTime,
+                lastPersonName: lastRecord?.personName || 'No recent activity'
+            };
+        });
 
         res.json(devices);
     } catch (error) {

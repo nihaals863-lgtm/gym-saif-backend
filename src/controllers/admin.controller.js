@@ -2864,7 +2864,11 @@ const getTenantSettings = async (req, res) => {
 
         const tenant = await prisma.tenant.findUnique({
             where: { id: tenantId },
-            select: { name: true }
+            select: { 
+                name: true,
+                phone: true,
+                location: true
+            }
         });
 
         if (!settings) {
@@ -2873,7 +2877,12 @@ const getTenantSettings = async (req, res) => {
             });
         }
 
-        res.json({ ...settings, name: tenant?.name || '' });
+        res.json({ 
+            ...settings, 
+            name: tenant?.name || '',
+            phone: tenant?.phone || '',
+            location: tenant?.location || ''
+        });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -2882,7 +2891,7 @@ const getTenantSettings = async (req, res) => {
 const updateTenantSettings = async (req, res) => {
     try {
         const { tenantId } = req.user;
-        const { name, ...settingsData } = req.body;
+        const { name, phone, location, email, ...settingsData } = req.body;
 
         let logoUrl = undefined;
 
@@ -2896,14 +2905,21 @@ const updateTenantSettings = async (req, res) => {
             delete settingsData.logo; // Remove base64 from settings data before database update
         }
 
-        if (name) {
+        if (name || phone || location) {
             await prisma.tenant.update({
                 where: { id: tenantId },
-                data: { name }
+                data: { 
+                    ...(name && { name }),
+                    ...(phone && { phone }),
+                    ...(location && { location })
+                }
             });
         }
 
         const updateData = { ...settingsData };
+        if (email) {
+            updateData.email = email;
+        }
         if (logoUrl) {
             updateData.logo = logoUrl;
         }
