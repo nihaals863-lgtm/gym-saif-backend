@@ -3,6 +3,7 @@ const prisma = require('../config/prisma');
 const bcrypt = require('bcryptjs');
 const cloudinary = require('../utils/cloudinary');
 const { logWebhook } = require('../utils/webhookLogger');
+const { encrypt, decrypt } = require('../utils/encryption');
 
 // --- GYM MANAGEMENT ---
 
@@ -893,7 +894,6 @@ const getDevices = async (req, res) => {
         res.status(500).json({ message: error.message });
     }
 };
-
 const addDevice = async (req, res) => {
     try {
         const { name, type, ip, status, branchId } = req.body;
@@ -926,17 +926,34 @@ const addDevice = async (req, res) => {
             return res.status(400).json({ message: 'No valid branches found' });
         }
 
-        const createdDevices = await Promise.all(targetBranchIds.map(tId =>
-            prisma.device.create({
+        const createdDevices = await Promise.all(targetBranchIds.map(async (tId) => {
+            // Update Tenant with SDK credentials if provided
+            if (req.body.sdkApiKey || req.body.sdkApiSecret) {
+                await prisma.tenant.update({
+                    where: { id: tId },
+                    data: {
+                        sdkApiKey: req.body.sdkApiKey ? encrypt(req.body.sdkApiKey) : undefined,
+                        sdkApiSecret: req.body.sdkApiSecret ? encrypt(req.body.sdkApiSecret) : undefined
+                    }
+                });
+            }
+
+            return prisma.device.create({
                 data: {
                     name: targetBranchIds.length > 1 ? `${name} (${tId})` : name,
                     type,
                     ipAddress: ip,
                     status: status || 'Online',
-                    tenantId: tId
+                    tenantId: tId,
+                    port: req.body.port ? parseInt(req.body.port) : undefined,
+                    protocol: req.body.protocol || undefined,
+                    sdkType: req.body.sdkType || undefined,
+                    deviceToken: req.body.deviceToken || undefined,
+                    companyId: req.body.companyId ? parseInt(req.body.companyId) : tId, // Default companyId to tenantId if not provided
+                    branchId: req.body.branchId ? parseInt(req.body.branchId) : undefined
                 }
-            })
-        ));
+            });
+        }));
 
         res.status(201).json(createdDevices.length === 1 ? createdDevices[0] : { message: 'Devices added successfully', count: createdDevices.length });
     } catch (error) {
@@ -948,14 +965,37 @@ const addDevice = async (req, res) => {
 const updateDevice = async (req, res) => {
     try {
         const { id } = req.params;
-        const { name, type, ip, status } = req.body;
+        const { name, type, ip, status, port, protocol, sdkType, deviceToken, companyId, branchId } = req.body;
+
+        // Update Tenant with SDK credentials if provided
+        if (req.body.sdkApiKey || req.body.sdkApiSecret || companyId) {
+            const device = await prisma.device.findUnique({ where: { id: parseInt(id) } });
+            const targetId = companyId ? parseInt(companyId) : device.tenantId;
+            
+            if (targetId && (req.body.sdkApiKey || req.body.sdkApiSecret)) {
+                await prisma.tenant.update({
+                    where: { id: targetId },
+                    data: {
+                        sdkApiKey: req.body.sdkApiKey ? encrypt(req.body.sdkApiKey) : undefined,
+                        sdkApiSecret: req.body.sdkApiSecret ? encrypt(req.body.sdkApiSecret) : undefined
+                    }
+                });
+            }
+        }
+
         const updatedDevice = await prisma.device.update({
             where: { id: parseInt(id) },
             data: {
                 name,
                 type,
                 ipAddress: ip,
-                status
+                status,
+                port: port ? parseInt(port) : undefined,
+                protocol,
+                sdkType,
+                deviceToken,
+                companyId: companyId ? parseInt(companyId) : undefined,
+                branchId: branchId ? parseInt(branchId) : undefined
             }
         });
         res.json(updatedDevice);

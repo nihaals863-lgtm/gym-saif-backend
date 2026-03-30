@@ -45,6 +45,8 @@ model Tenant {
   ptAccounts        PTMemberAccount[]
   ptSessions        PTSession[]
   subscriptions     Subscription[]
+  sdkApiKey         String?
+  sdkApiSecret      String?
 
   @@map("tenant")
 }
@@ -226,6 +228,12 @@ model Device {
   lastSeen     DateTime @default(now())
   entriesToday Int      @default(0)
   ipAddress    String?
+  port         Int?     @default(80)
+  protocol     String?  @default("HTTP")
+  sdkType      String?
+  deviceToken  String?
+  companyId    Int?
+  branchId     Int?
 
   @@map("device")
 }
