@@ -75,7 +75,8 @@ const {
     getAttendanceQrPreview,
     runReminders,
     getNotificationSettings,
-    updateNotificationSettings
+    updateNotificationSettings,
+    syncStaffToMips
 } = require('../controllers/admin.controller');
 const { getTrainerRequests, updateTrainerRequest, updateStaffMember, deleteStaffMember } = require('../controllers/superadmin.controller');
 const { protect, authorize } = require('../middleware/auth.middleware');
@@ -154,6 +155,7 @@ router.post('/staff/link', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), 
 router.get('/requests/trainers', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), getTrainerRequests);
 router.patch('/requests/trainers/:id', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), updateTrainerRequest);
 router.patch('/staff/:id', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), updateStaffMember);
+router.post('/staff/:id/sync', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), syncStaffToMips);
 router.delete('/staff/:id', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), deleteStaffMember);
 
 // Service Requests (Members)

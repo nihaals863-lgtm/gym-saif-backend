@@ -1405,11 +1405,18 @@ const getMemberDashboard = async (req, res) => {
                 date: member.bookings[0].date,
                 status: member.bookings[0].status
             } : null,
-            trainer: member.trainer ? {
-                userId: member.trainer.id,
-                name: member.trainer.name,
-                specialization: 'Personal Trainer'
-            } : {
+            trainer: member.trainer ? (() => {
+                let spec = 'Trainer';
+                try {
+                    const cfg = typeof member.trainer.config === 'string' ? JSON.parse(member.trainer.config) : member.trainer.config;
+                    spec = cfg?.specialization || 'Trainer';
+                } catch (e) { }
+                return {
+                    userId: member.trainer.id,
+                    name: member.trainer.name,
+                    specialization: spec
+                };
+            })() : {
                 userId: null,
                 name: 'Not Assigned',
                 specialization: 'Connect with staff'

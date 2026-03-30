@@ -97,6 +97,12 @@ app.use('/api/v1/payroll', payrollRoutes);
 const gymDeviceRoutes = require('./routes/gymDevice.routes');
 app.use('/api/v1/gym-device', gymDeviceRoutes);
 
+const deviceRoutes = require('./routes/device.routes');
+app.use('/api/v1/devices', deviceRoutes);
+
+const mipsSyncRoutes = require('./routes/mipsSync.routes');
+app.use('/api/v1/mips-sync', mipsSyncRoutes);
+
 // Base Route
 app.get('/', (req, res) => {
     res.json({ message: 'Gym CRM API is running' });

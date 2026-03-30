@@ -4,6 +4,7 @@ const bcrypt = require('bcryptjs');
 const cloudinary = require('../utils/cloudinary');
 const { logWebhook } = require('../utils/webhookLogger');
 const { encrypt, decrypt } = require('../utils/encryption');
+const { syncUserToMips } = require('../utils/mipsSync');
 
 // --- GYM MANAGEMENT ---
 
@@ -1241,7 +1242,7 @@ const updateStaffMember = async (req, res) => {
             joiningDate, status, baseSalary, commission, accountNumber, ifsc,
             trainerConfig, salesConfig, managerConfig, documents,
             idType, idNumber, specialization, certifications, salaryType, hourlyRate, ptSharePercent, bio,
-            position, bankName, taxId, tenantId, avatar
+            position, bankName, taxId, tenantId, avatar, gender
         } = req.body;
 
         console.log(`[updateStaffMember] Received update for ID ${id}:`, {
@@ -1313,6 +1314,7 @@ const updateStaffMember = async (req, res) => {
         if (position !== undefined) newConfigObject.position = position;
         if (bankName !== undefined) newConfigObject.bankName = bankName;
         if (taxId !== undefined) newConfigObject.taxId = taxId;
+        if (gender !== undefined) newConfigObject.gender = gender;
 
         updateData.config = JSON.stringify(newConfigObject);
 
@@ -1320,6 +1322,10 @@ const updateStaffMember = async (req, res) => {
             where: { id: parseInt(id) },
             data: updateData
         });
+
+        // Background Sync to MIPS
+        setImmediate(() => syncUserToMips(updatedStaff));
+
         res.json(updatedStaff);
     } catch (error) {
         console.error('Error updating staff member:', error);

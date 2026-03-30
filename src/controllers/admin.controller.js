@@ -3,6 +3,7 @@ const prisma = require('../config/prisma');
 const cloudinary = require('../utils/cloudinary');
 const PDFDocument = require('pdfkit');
 const QRCode = require('qrcode');
+const { buildMemberObj, upsertPersonInMips, uploadPhotoToMips, assignPhotoToPerson, syncPersonToDevices, syncUserToMips } = require('../utils/mipsSync');
 
 // --- MEMBER MANAGEMENT ---
 
@@ -298,6 +299,39 @@ const addMember = async (req, res) => {
             }
             createdMembers.push(newMember);
 
+            // --- AUTO SYNC TO MIPS (fire-and-forget — non-blocking) ---
+            // Member creation succeeds even if MIPS is unreachable
+            setImmediate(async () => {
+                try {
+                    const personObj = buildMemberObj(newMember);
+                    const { personId } = await upsertPersonInMips(personObj, tId);
+
+                    if (avatarUrl) {
+                        const photoUri = await uploadPhotoToMips(avatarUrl, tId);
+                        if (photoUri) await assignPhotoToPerson(personObj.personSn, photoUri, tId);
+                    }
+
+                    await syncPersonToDevices(personId, tId);
+
+                    await prisma.member.update({
+                        where: { id: newMember.id },
+                        data: {
+                            mipsPersonSn: personObj.personSn,
+                            mipsPersonId: personId,
+                            mipsSyncStatus: 'synced',
+                            mipsSyncedAt: new Date()
+                        }
+                    });
+                    console.log(`[AutoSync] Member "${name}" synced to MIPS (branch ${tId})`);
+                } catch (mipsErr) {
+                    console.warn(`[AutoSync] MIPS sync failed for member "${name}":`, mipsErr.message);
+                    await prisma.member.update({
+                        where: { id: newMember.id },
+                        data: { mipsSyncStatus: 'failed' }
+                    }).catch(() => {});
+                }
+            });
+
             // --- LINK OR CREATE REFERRAL LEAD ---
             if (referralCode) {
                 try {
@@ -464,6 +498,37 @@ const updateMember = async (req, res) => {
         const updated = await prisma.member.update({
             where: { id: parseInt(id) },
             data: updateData
+        });
+
+        // --- MIPS SYNC (non-blocking) ---
+        setImmediate(async () => {
+            try {
+                const personObj = buildMemberObj(updated);
+                const { personId } = await upsertPersonInMips(personObj, updated.tenantId);
+
+                if (updated.avatar) {
+                    const photoUri = await uploadPhotoToMips(updated.avatar, updated.tenantId);
+                    if (photoUri) await assignPhotoToPerson(personObj.personSn, photoUri, updated.tenantId);
+                }
+
+                await syncPersonToDevices(personId, updated.tenantId);
+
+                await prisma.member.update({
+                    where: { id: updated.id },
+                    data: {
+                        mipsPersonSn: personObj.personSn,
+                        mipsPersonId: personId,
+                        mipsSyncStatus: 'synced',
+                        mipsSyncedAt: new Date()
+                    }
+                });
+            } catch (err) {
+                console.warn(`[MIPS] Update Sync failed for member ${updated.id}:`, err.message);
+                await prisma.member.update({
+                    where: { id: updated.id },
+                    data: { mipsSyncStatus: 'failed' }
+                }).catch(() => { });
+            }
         });
 
         // Log the change
@@ -737,7 +802,7 @@ const createStaff = async (req, res) => {
             joiningDate, status, baseSalary, commission, accountNumber, ifsc,
             trainerConfig, salesConfig, managerConfig, documents,
             idType, idNumber, specialization, certifications, salaryType, hourlyRate, ptSharePercent, bio,
-            position, bankName, taxId, avatar
+            position, bankName, taxId, avatar, gender
         } = req.body;
 
         console.log(`[createStaff] Received payload:`, {
@@ -819,12 +884,18 @@ const createStaff = async (req, res) => {
                                 commission: commission ? parseFloat(commission) : 0,
                                 position,
                                 bankName,
-                                taxId
+                                taxId,
+                                gender: gender || 'Male'
                             }),
                             documents: documents ? JSON.stringify(documents) : null,
                             avatar: avatarUrl
                         }
                     });
+                    
+                    // Background Sync to MIPS
+                    setImmediate(() => syncUserToMips(user));
+
+                    return user;
                 } catch (e) {
                     console.error(`Failed to create staff for branch ${b.id}:`, e.message);
                     return null;
@@ -860,16 +931,37 @@ const createStaff = async (req, res) => {
                     commission: commission ? parseFloat(commission) : 0,
                     position,
                     bankName,
-                    taxId
+                    taxId,
+                    gender: gender || 'Male'
                 }),
                 documents: documents ? JSON.stringify(documents) : null,
                 avatar: avatarUrl
             }
         });
 
+        // Background Sync to MIPS
+        setImmediate(() => syncUserToMips(newStaff));
+
         res.status(201).json(newStaff);
     } catch (error) {
         console.error('Error creating staff:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const syncStaffToMips = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const user = await prisma.user.findUnique({
+            where: { id: parseInt(id) }
+        });
+
+        if (!user) return res.status(404).json({ message: 'User not found' });
+
+        const result = await syncUserToMips(user);
+        res.json({ message: 'Sync triggered', result });
+    } catch (error) {
+        console.error('[syncStaffToMips] Error:', error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -1903,6 +1995,17 @@ const freezeMember = async (req, res) => {
             }
         });
 
+        // --- MIPS SYNC (non-blocking) ---
+        setImmediate(async () => {
+            try {
+                const personObj = buildMemberObj(updated);
+                const { personId } = await upsertPersonInMips(personObj, updated.tenantId);
+                await syncPersonToDevices(personId, updated.tenantId);
+            } catch (err) {
+                console.warn(`[MIPS] Freeze Sync failed for member ${updated.id}:`, err.message);
+            }
+        });
+
         res.json(updated);
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -1916,6 +2019,18 @@ const unfreezeMember = async (req, res) => {
             where: { id: parseInt(id) },
             data: { status: 'Active' }
         });
+
+        // --- MIPS SYNC (non-blocking) ---
+        setImmediate(async () => {
+            try {
+                const personObj = buildMemberObj(updated);
+                const { personId } = await upsertPersonInMips(personObj, updated.tenantId);
+                await syncPersonToDevices(personId, updated.tenantId);
+            } catch (err) {
+                console.warn(`[MIPS] Unfreeze Sync failed for member ${updated.id}:`, err.message);
+            }
+        });
+
         res.json(updated);
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -1939,6 +2054,17 @@ const giftDays = async (req, res) => {
             data: {
                 expiryDate: newExpiry,
                 medicalHistory: member.medicalHistory ? `${member.medicalHistory}\n[Gift: ${days} days - ${note}]` : `[Gift: ${days} days - ${note}]`
+            }
+        });
+
+        // --- MIPS SYNC (non-blocking) ---
+        setImmediate(async () => {
+            try {
+                const personObj = buildMemberObj(updated);
+                const { personId } = await upsertPersonInMips(personObj, updated.tenantId);
+                await syncPersonToDevices(personId, updated.tenantId);
+            } catch (err) {
+                console.warn(`[MIPS] Gift Sync failed for member ${updated.id}:`, err.message);
             }
         });
 
@@ -3034,6 +3160,17 @@ const renewMembership = async (req, res) => {
             }
         });
 
+        // --- MIPS SYNC (non-blocking) ---
+        setImmediate(async () => {
+            try {
+                const personObj = buildMemberObj(updatedMember);
+                const { personId } = await upsertPersonInMips(personObj, tenantId);
+                await syncPersonToDevices(personId, tenantId);
+            } catch (err) {
+                console.warn(`[MIPS] Renewal Sync failed for member ${updatedMember.id}:`, err.message);
+            }
+        });
+
         await prisma.invoice.create({
             data: {
                 tenantId,
@@ -3692,5 +3829,6 @@ module.exports = {
     saveClassAttendance,
     runReminders,
     getNotificationSettings,
-    updateNotificationSettings
+    updateNotificationSettings,
+    syncStaffToMips
 };

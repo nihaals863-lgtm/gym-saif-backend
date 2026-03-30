@@ -83,6 +83,11 @@ model User {
   department     String?
   documents      String?      @db.LongText
   ifsc           String?
+  mipsPersonSn   String?
+  mipsPersonId   String?
+  mipsSyncStatus String?  @default("pending")
+  mipsSyncedAt   DateTime?
+  employeeCode   String?
   attendances    Attendance[]
   classes        Class[]
   assignedLeads  Lead[]       @relation("LeadAssignee")
@@ -231,11 +236,31 @@ model Device {
   port         Int?     @default(80)
   protocol     String?  @default("HTTP")
   sdkType      String?
+  sdkApiKey    String?
+  sdkApiSecret String?
+  deviceKey    String?  @unique
   deviceToken  String?
   companyId    Int?
   branchId     Int?
+  createdAt    DateTime @default(now())
 
   @@map("device")
+}
+
+model MipsConnection {
+  id           Int      @id @default(autoincrement())
+  branchId     Int      @unique
+  serverUrl    String
+  username     String
+  password     String
+  tenantId     String   @default("1")
+  isActive     Boolean  @default(true)
+  sdkApiKey    String?
+  sdkApiSecret String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@map("mips_connections")
 }
 
 model Member {
@@ -266,6 +291,10 @@ model Member {
   idType          String?
   idNumber        String?
   address         String?           @db.Text
+  mipsPersonSn    String?
+  mipsPersonId    String?
+  mipsSyncStatus  String?  @default("pending")
+  mipsSyncedAt    DateTime?
   bookings        Booking[]
   storeOrders     StoreOrder[]
   lockers         Locker[]
@@ -577,15 +606,17 @@ model Payroll {
 }
 
 model Attendance {
-  id       Int       @id @default(autoincrement())
-  userId   Int?
-  memberId Int?
-  checkIn  DateTime?
-  checkOut DateTime?
-  type     String
-  date     DateTime  @default(now())
-  status   String    @default("Present")
-  tenantId Int       @default(1)
+  id              Int       @id @default(autoincrement())
+  userId          Int?
+  memberId        Int?
+  checkIn         DateTime?
+  checkOut        DateTime?
+  checkInMethod   String?
+  checkOutMethod  String?
+  type            String
+  date            DateTime  @default(now())
+  status          String    @default("Present")
+  tenantId        Int       @default(1)
   tenant   Tenant    @relation(fields: [tenantId], references: [id])
   user     User?     @relation(fields: [userId], references: [id])
   member   Member?   @relation(fields: [memberId], references: [id])
@@ -1096,4 +1127,24 @@ model Commission {
   @@index([trainerId])
   @@index([tenantId])
   @@map("commission")
+}
+
+model AccessLog {
+  id               Int      @id @default(autoincrement())
+  personId         String
+  personName       String?
+  personType       String?  @default("VISITOR")
+  deviceKey        String?
+  deviceName       String?
+  passType         String?
+  scanTime         DateTime
+  branchId         Int?
+  attendanceResult String?
+  status           String?  @default("ALLOWED")
+  createdAt        DateTime @default(now())
+
+  @@index([branchId])
+  @@index([scanTime])
+  @@index([deviceKey])
+  @@map("access_log")
 }
