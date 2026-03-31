@@ -417,7 +417,7 @@ const getChatContacts = async (req, res) => {
         const contacts = Array.from(contactMap.values()).map(contact => {
             // Resolve the userId to check counts/messages
             const uId = contact.isStaff ? contact.id : contact.userId;
-            
+
             if (uId) {
                 const lastMsg = lastMessageMap.get(uId);
                 return {
@@ -428,7 +428,7 @@ const getChatContacts = async (req, res) => {
                     timestamp: lastMsg ? new Date(lastMsg.createdAt).getTime() : 0
                 };
             }
-            
+
             return {
                 ...contact,
                 unread: 0,
@@ -542,7 +542,11 @@ const checkBirthdays = async (req, res) => {
                 status: 'Active',
                 dob: { contains: mmdd }
             },
-            include: {
+            select: {
+                id: true,
+                name: true,
+                userId: true,
+                tenantId: true,
                 tenant: true
             }
         });
@@ -593,7 +597,13 @@ const sendPersonalBirthdayWish = async (req, res) => {
         const tenantId = req.user.tenantId || 1;
 
         const member = await prisma.member.findUnique({
-            where: { id: parseInt(memberId) }
+            where: { id: parseInt(memberId) },
+            select: {
+                id: true,
+                name: true,
+                userId: true,
+                tenantId: true
+            }
         });
 
         if (!member) return res.status(404).json({ message: "Member not found" });
