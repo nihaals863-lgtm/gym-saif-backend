@@ -6,17 +6,22 @@ exports.getManagerDashboard = async (req, res) => {
         const tenantId = req.headers['x-tenant-id'] || req.query.tenantId ? parseInt(req.headers['x-tenant-id'] || req.query.tenantId) : req.user.tenantId;
 
 
-        const activeMembers = await prisma.member.count({
-            where: { tenantId, status: { in: ['Active', 'active'] } }
-        });
+        const [activeMembers, classesToday, paymentsDueInvoices, paymentsDuePayrolls] = await Promise.all([
+            prisma.member.count({
+                where: { tenantId, status: { in: ['Active', 'active'] } }
+            }),
+            prisma.class.count({
+                where: { tenantId }
+            }),
+            prisma.invoice.count({
+                where: { tenantId, status: { in: ['Overdue', 'unpaid', 'Unpaid'] } }
+            }),
+            prisma.payroll.count({
+                where: { tenantId, status: 'Approved' }
+            })
+        ]);
 
-        const classesToday = await prisma.class.count({
-            where: { tenantId } // Simplified for now
-        });
-
-        const paymentsDue = await prisma.invoice.count({
-            where: { tenantId, status: { in: ['Overdue', 'unpaid', 'Unpaid'] } }
-        });
+        const paymentsDue = paymentsDueInvoices + paymentsDuePayrolls;
 
         // Financials
         const today = new Date();
@@ -70,64 +75,81 @@ exports.getManagerDashboard = async (req, res) => {
         });
 
         // Fetch Tasks and Notices
+        const [maintenanceTasks, taskCounts, overdueTasksCount, recentTasks] = await Promise.all([
+            // 1. Maintenance Requests
+            prisma.maintenanceRequest.findMany({
+                where: { equipment: { tenantId }, status: { notIn: ['Resolved', 'Completed'] } },
+                take: 2,
+                include: { equipment: true }
+            }).catch(() => []),
+            // 2. Task Stats
+            prisma.task.groupBy({
+                by: ['status'],
+                where: { tenantId },
+                _count: { id: true }
+            }),
+            // 3. Overdue Tasks
+            prisma.task.count({
+                where: { tenantId, status: { notIn: ['Completed', 'Approved'] }, dueDate: { lt: today } }
+            }),
+            // 4. Recent Tasks for "Tasks and Notices" section
+            prisma.task.findMany({
+                where: { tenantId, status: { notIn: ['Approved'] } },
+                take: 5,
+                orderBy: { dueDate: 'asc' }
+            }).catch(() => [])
+        ]);
+
+        const taskStats = {
+            total: taskCounts.reduce((acc, curr) => acc + curr._count.id, 0),
+            pending: taskCounts.find(t => t.status === 'Pending')?._count.id || 0,
+            inProgress: taskCounts.find(t => t.status === 'In Progress')?._count.id || 0,
+            completed: taskCounts.find(t => t.status === 'Completed')?._count.id || 0,
+            approved: taskCounts.find(t => t.status === 'Approved')?._count.id || 0,
+            overdue: overdueTasksCount
+        };
+
         const tasksAndNotices = [];
 
-        // 1. Maintenance Requests
-        const maintenanceTasks = await prisma.maintenanceRequest.findMany({
-            where: { equipment: { tenantId }, status: { notIn: ['Resolved', 'Completed'] } },
-            take: 2,
-            include: { equipment: true }
-        }).catch(() => []);
-
-        maintenanceTasks.forEach(t => {
-            tasksAndNotices.push({
-                id: `m_${t.id}`,
-                type: 'urgent',
-                title: 'Equipment Service Due',
-                description: `${t.equipment?.name || 'Equipment'} needs maintenance.`,
-                dueDate: new Date(t.createdAt).toLocaleDateString()
-            });
-        });
-
-        // 2. Pending Standard Tasks assigned within tenant
-        const pendingTasks = await prisma.task.findMany({
-            where: { tenantId, status: 'Pending' },
-            take: 3,
-            orderBy: { dueDate: 'asc' }
-        }).catch(() => []);
-
-        pendingTasks.forEach(t => {
+        recentTasks.forEach(t => {
             tasksAndNotices.push({
                 id: `t_${t.id}`,
                 type: t.priority === 'High' ? 'urgent' : 'notice',
                 title: t.title,
                 description: t.description || 'Pending task completion.',
-                dueDate: new Date(t.dueDate).toLocaleDateString()
+                dueDate: new Date(t.dueDate).toLocaleDateString(),
+                status: t.status
             });
         });
 
         // Sort tasks globally by urgency
         tasksAndNotices.sort((a, b) => a.type === 'urgent' ? -1 : 1);
 
-        const todayInvoices = await prisma.invoice.findMany({
-            where: { tenantId, paidDate: { gte: today, lt: tomorrow } }
-        });
+        const [todayInvoices, overdueInvoices, expenses, equipmentList] = await Promise.all([
+            prisma.invoice.findMany({
+                where: { tenantId, paidDate: { gte: today, lt: tomorrow } }
+            }),
+            prisma.invoice.findMany({
+                where: { tenantId, status: { in: ['Overdue', 'unpaid', 'Unpaid'] } }
+            }),
+            prisma.expense.findMany({
+                where: { tenantId, date: { gte: today, lt: tomorrow } }
+            }).catch(() => []),
+            prisma.equipment.findMany({
+                where: { tenantId }
+            }).catch(() => [])
+        ]);
+
         const collectionToday = todayInvoices.reduce((sum, inv) => sum + Number(inv.amount), 0);
-
-        const overdueInvoices = await prisma.invoice.findMany({
-            where: { tenantId, status: { in: ['Overdue', 'unpaid', 'Unpaid'] } }
+        
+        // Pending dues from payroll
+        const overduePayrolls = await prisma.payroll.findMany({
+            where: { tenantId, status: 'Approved' }
         });
-        const pendingDuesAmount = overdueInvoices.reduce((sum, inv) => sum + Number(inv.amount), 0);
-
-        const expenses = await prisma.expense.findMany({
-            where: { tenantId, date: { gte: today, lt: tomorrow } }
-        }).catch(() => []); // In case Expense model doesn't exist yet
+        const pendingDuesAmount = overdueInvoices.reduce((sum, inv) => sum + Number(inv.amount), 0) + 
+                             overduePayrolls.reduce((sum, p) => sum + Number(p.amount), 0);
+        
         const localExpenses = expenses.reduce((sum, exp) => sum + Number(exp.amount), 0);
-
-        // Equipment Stats
-        const equipmentList = await prisma.equipment.findMany({
-            where: { tenantId }
-        }).catch(() => []);
 
         const totalAssets = equipmentList.length;
         const outOfOrder = equipmentList.filter(eq => eq.status === 'Maintenance' || eq.status === 'Broken').length;
@@ -146,7 +168,8 @@ exports.getManagerDashboard = async (req, res) => {
                 operational,
                 outOfOrder
             },
-            tasksAndNotices
+            tasksAndNotices,
+            taskStats
         });
     } catch (error) {
         console.error('Manager Dashboard Error:', error);
@@ -164,48 +187,69 @@ exports.getStaffDashboard = async (req, res) => {
         const tomorrow = new Date(today);
         tomorrow.setDate(tomorrow.getDate() + 1);
 
-        const checkinsToday = await prisma.attendance.count({
-            where: { tenantId, date: { gte: today, lt: tomorrow } }
-        });
+        const [
+            checkinsToday,
+            newEnquiriesToday,
+            assignedTasks,
+            pendingInvoiceCount,
+            pendingPayrollCount,
+            highPriorityTasks,
+            upcomingClasses
+        ] = await Promise.all([
+            prisma.attendance.count({
+                where: { tenantId, date: { gte: today, lt: tomorrow } }
+            }),
+            prisma.lead.count({
+                where: { tenantId, status: 'New', createdAt: { gte: today, lt: tomorrow } }
+            }),
+            prisma.task.count({
+                where: { assignedToId: staffId, status: 'Pending' }
+            }),
+            prisma.invoice.count({
+                where: { tenantId, status: 'Unpaid' }
+            }),
+            prisma.payroll.count({
+                where: { tenantId, status: 'Approved' } // Counts as Unpaid in Dashboard
+            }),
+            prisma.task.count({
+                where: { assignedToId: staffId, status: 'Pending', priority: 'High' }
+            }),
+            prisma.class.count({
+                where: { tenantId, status: 'Scheduled' }
+            })
+        ]);
 
-        const newEnquiriesToday = await prisma.lead.count({
-            where: { tenantId, status: 'New', createdAt: { gte: today, lt: tomorrow } }
-        });
+        const pendingPayments = pendingInvoiceCount + pendingPayrollCount;
 
-        const assignedTasks = await prisma.task.count({
-            where: { assignedToId: staffId, status: 'Pending' }
-        });
-
-        const pendingPayments = await prisma.invoice.count({
-            where: { tenantId, status: 'Unpaid' }
-        });
-
-        const highPriorityTasks = await prisma.task.count({
-            where: { assignedToId: staffId, status: 'Pending', priority: 'High' }
-        });
-
-        const upcomingClasses = await prisma.class.count({
-            where: { tenantId, status: 'Scheduled' }
-        });
-
-        // Pending Actions: Unpaid Invoices & New Inquiries
-        const unpaidInvoices = await prisma.invoice.findMany({
-            where: { tenantId, status: 'Unpaid' },
-            take: 2,
-            orderBy: { dueDate: 'asc' }
-        });
-
-        const recentEnquiries = await prisma.lead.findMany({
-            where: { tenantId, status: 'New' },
-            take: 2,
-            orderBy: { createdAt: 'desc' }
-        });
+        // Pending Actions: Unpaid Invoices, Approved Payrolls & New Inquiries
+        const [unpaidInvoices, approvedPayrolls, recentEnquiries] = await Promise.all([
+            prisma.invoice.findMany({
+                where: { tenantId, status: 'Unpaid' },
+                take: 2,
+                orderBy: { dueDate: 'asc' }
+            }),
+            prisma.payroll.findMany({
+                where: { tenantId, status: 'Approved' },
+                take: 2,
+                orderBy: { id: 'desc' }
+            }),
+            prisma.lead.findMany({
+                where: { tenantId, status: 'New' },
+                take: 2,
+                orderBy: { createdAt: 'desc' }
+            })
+        ]);
 
         const pendingActions = [
             ...unpaidInvoices.map(inv => ({
                 type: 'Payment',
                 title: 'Payment Due',
                 subtitle: `Invoice #${inv.invoiceNumber} (₹${inv.amount})`
+            })),
+            ...approvedPayrolls.map(p => ({
+                type: 'Payroll',
+                title: 'Payroll Approved',
+                subtitle: `Salary for Staff (₹${p.amount})`
             })),
             ...recentEnquiries.map(enq => ({
                 type: 'Enquiry',

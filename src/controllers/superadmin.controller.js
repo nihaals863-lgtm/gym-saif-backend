@@ -1,7 +1,10 @@
 // gym_backend/src/controllers/superadmin.controller.js
 const prisma = require('../config/prisma');
 const bcrypt = require('bcryptjs');
+const cloudinary = require('../utils/cloudinary');
 const { logWebhook } = require('../utils/webhookLogger');
+const { encrypt, decrypt } = require('../utils/encryption');
+const { syncUserToMips } = require('../utils/mipsSync');
 
 // --- GYM MANAGEMENT ---
 
@@ -53,6 +56,11 @@ const getAllGyms = async (req, res) => {
                 include: {
                     _count: {
                         select: { users: { where: { role: 'MEMBER' } } }
+                    },
+                    subscriptions: {
+                        where: { status: 'Active' },
+                        include: { plan: true },
+                        take: 1
                     }
                 }
             }),
@@ -70,6 +78,8 @@ const getAllGyms = async (req, res) => {
             location: g.location,
             status: g.status,
             members: g._count.users,
+            planId: g.subscriptions[0]?.planId,
+            planName: g.subscriptions[0]?.plan?.name || 'No Plan',
             createdAt: g.createdAt
         }));
 
@@ -188,10 +198,59 @@ const addGym = async (req, res) => {
 const updateGym = async (req, res) => {
     try {
         const { id } = req.params;
+        const { gymName, branchName, ownerName, email, phone, address, status, owner, location, planId } = req.body;
+
+        const data = {};
+        if (gymName !== undefined) data.name = gymName;
+        if (branchName !== undefined) data.branchName = branchName;
+        if (owner !== undefined) data.owner = owner;
+        if (ownerName !== undefined) data.managerName = ownerName;
+        if (email !== undefined) data.managerEmail = email;
+        if (phone !== undefined) data.phone = phone;
+        if (location !== undefined) data.location = location;
+        if (address !== undefined && location === undefined) data.location = address;
+        if (status !== undefined) data.status = status;
+
         const updatedGym = await prisma.tenant.update({
             where: { id: parseInt(id) },
-            data: req.body
+            data
         });
+
+        if (planId) {
+            const existingSub = await prisma.subscription.findFirst({
+                where: { tenantId: parseInt(id), status: 'Active' }
+            });
+
+            if (existingSub) {
+                await prisma.subscription.update({
+                    where: { id: existingSub.id },
+                    data: { planId: parseInt(planId) }
+                });
+            } else {
+                const plan = await prisma.saaSPlan.findUnique({ where: { id: parseInt(planId) } });
+                if (plan) {
+                    const startDate = new Date();
+                    const endDate = new Date();
+                    if (plan.period === 'Monthly') {
+                        endDate.setMonth(endDate.getMonth() + 1);
+                    } else if (plan.period === 'Yearly') {
+                        endDate.setFullYear(endDate.getFullYear() + 1);
+                    }
+
+                    await prisma.subscription.create({
+                        data: {
+                            tenantId: parseInt(id),
+                            planId: parseInt(planId),
+                            subscriber: ownerName || updatedGym.owner || updatedGym.name,
+                            startDate,
+                            endDate,
+                            status: 'Active',
+                            paymentStatus: 'Paid'
+                        }
+                    });
+                }
+            }
+        }
         res.json(updatedGym);
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -384,30 +443,41 @@ const fetchDashboardCards = async (req, res) => {
         const plansTrend = `${retentionRate}% retention`;
         const plansTrendDirection = retentionRate >= 80 ? 'up' : retentionRate >= 50 ? 'stable' : 'down';
 
-        // --- MONTHLY REVENUE ---
-        const currentMonthRevenue = await prisma.saasPayment.aggregate({
-            _sum: { amount: true },
-            where: { status: 'Success', date: { gte: currentMonthStart } }
+        // --- OPERATIONAL TASKS ---
+        const totalTasks = await prisma.task.count();
+        const completedTasks = await prisma.task.count({
+            where: { status: { in: ['Completed', 'Approved'] } }
         });
-        const lastMonthRevenue = await prisma.saasPayment.aggregate({
-            _sum: { amount: true },
-            where: { status: 'Success', date: { gte: previousMonthStart, lte: previousMonthEnd } }
+        const taskCompletionRate = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+        const tasksTrend = `${taskCompletionRate}% completion rate`;
+        const tasksTrendDirection = taskCompletionRate >= 90 ? 'up' : taskCompletionRate >= 70 ? 'stable' : 'down';
+
+        // --- REVENUE ---
+        const totalRevenue = await prisma.saasPayment.aggregate({
+            where: { status: 'Success' },
+            _sum: { amount: true }
         });
-        const currentRev = currentMonthRevenue._sum.amount ? parseFloat(currentMonthRevenue._sum.amount) : 0;
-        const lastRev = lastMonthRevenue._sum.amount ? parseFloat(lastMonthRevenue._sum.amount) : 0;
-        const totalRevenueAll = await prisma.saasPayment.aggregate({
-            _sum: { amount: true },
-            where: { status: 'Success' }
+        const revenueValue = totalRevenue._sum.amount || 0;
+
+        const revenueThisMonth = await prisma.saasPayment.aggregate({
+            where: { status: 'Success', date: { gte: currentMonthStart } },
+            _sum: { amount: true }
         });
-        const revenueValue = totalRevenueAll._sum.amount ? parseFloat(totalRevenueAll._sum.amount) : 0;
+        const revenueLastMonth = await prisma.saasPayment.aggregate({
+            where: { status: 'Success', date: { gte: previousMonthStart, lte: previousMonthEnd } },
+            _sum: { amount: true }
+        });
+
+        const revThis = parseFloat(revenueThisMonth._sum.amount || 0);
+        const revLast = parseFloat(revenueLastMonth._sum.amount || 0);
 
         let revenueTrend;
         let revenueTrendDirection;
-        if (lastRev === 0) {
-            revenueTrend = currentRev > 0 ? `+₹${currentRev.toLocaleString()} this month` : 'No revenue yet';
-            revenueTrendDirection = currentRev > 0 ? 'up' : 'stable';
+        if (revLast === 0) {
+            revenueTrend = revThis > 0 ? `+₹${revThis.toLocaleString()} new` : 'No revenue';
+            revenueTrendDirection = revThis > 0 ? 'up' : 'stable';
         } else {
-            const revChange = Math.round(((currentRev - lastRev) / lastRev) * 100);
+            const revChange = Math.round(((revThis - revLast) / revLast) * 100);
             revenueTrend = revChange >= 0 ? `+${revChange}% vs last month` : `${revChange}% vs last month`;
             revenueTrendDirection = revChange > 0 ? 'up' : revChange < 0 ? 'down' : 'stable';
         }
@@ -416,7 +486,8 @@ const fetchDashboardCards = async (req, res) => {
             { id: 1, title: 'Total Gyms', value: totalGyms.toString(), trend: gymsTrend, trendDirection: gymsTrendDirection, color: gymsTrendDirection === 'up' ? 'primary' : gymsTrendDirection === 'down' ? 'danger' : 'info' },
             { id: 2, title: 'Total Members', value: totalMembers.toLocaleString(), trend: membersTrend, trendDirection: membersTrendDirection, color: membersTrendDirection === 'up' ? 'success' : membersTrendDirection === 'down' ? 'danger' : 'info' },
             { id: 3, title: 'Active Plans', value: activeSubs.toString(), trend: plansTrend, trendDirection: plansTrendDirection, color: plansTrendDirection === 'up' ? 'success' : plansTrendDirection === 'down' ? 'danger' : 'warning' },
-            { id: 4, title: 'Monthly Revenue', value: `₹${revenueValue.toLocaleString()}`, trend: revenueTrend, trendDirection: revenueTrendDirection, color: revenueTrendDirection === 'up' ? 'success' : revenueTrendDirection === 'down' ? 'danger' : 'info' }
+            { id: 4, title: 'Monthly Revenue', value: `₹${revenueValue.toLocaleString()}`, trend: revenueTrend, trendDirection: revenueTrendDirection, color: revenueTrendDirection === 'up' ? 'success' : revenueTrendDirection === 'down' ? 'danger' : 'info' },
+            { id: 5, title: 'Operational Tasks', value: totalTasks.toString(), trend: tasksTrend, trendDirection: tasksTrendDirection, color: tasksTrendDirection === 'up' ? 'success' : tasksTrendDirection === 'down' ? 'danger' : 'info' }
         ]);
     } catch (error) {
         console.error('Dashboard Cards Error:', error);
@@ -824,7 +895,6 @@ const getDevices = async (req, res) => {
         res.status(500).json({ message: error.message });
     }
 };
-
 const addDevice = async (req, res) => {
     try {
         const { name, type, ip, status, branchId } = req.body;
@@ -857,17 +927,34 @@ const addDevice = async (req, res) => {
             return res.status(400).json({ message: 'No valid branches found' });
         }
 
-        const createdDevices = await Promise.all(targetBranchIds.map(tId =>
-            prisma.device.create({
+        const createdDevices = await Promise.all(targetBranchIds.map(async (tId) => {
+            // Update Tenant with SDK credentials if provided
+            if (req.body.sdkApiKey || req.body.sdkApiSecret) {
+                await prisma.tenant.update({
+                    where: { id: tId },
+                    data: {
+                        sdkApiKey: req.body.sdkApiKey ? encrypt(req.body.sdkApiKey) : undefined,
+                        sdkApiSecret: req.body.sdkApiSecret ? encrypt(req.body.sdkApiSecret) : undefined
+                    }
+                });
+            }
+
+            return prisma.device.create({
                 data: {
                     name: targetBranchIds.length > 1 ? `${name} (${tId})` : name,
                     type,
                     ipAddress: ip,
                     status: status || 'Online',
-                    tenantId: tId
+                    tenantId: tId,
+                    port: req.body.port ? parseInt(req.body.port) : undefined,
+                    protocol: req.body.protocol || undefined,
+                    sdkType: req.body.sdkType || undefined,
+                    deviceToken: req.body.deviceToken || undefined,
+                    companyId: req.body.companyId ? parseInt(req.body.companyId) : tId, // Default companyId to tenantId if not provided
+                    branchId: req.body.branchId ? parseInt(req.body.branchId) : undefined
                 }
-            })
-        ));
+            });
+        }));
 
         res.status(201).json(createdDevices.length === 1 ? createdDevices[0] : { message: 'Devices added successfully', count: createdDevices.length });
     } catch (error) {
@@ -879,14 +966,37 @@ const addDevice = async (req, res) => {
 const updateDevice = async (req, res) => {
     try {
         const { id } = req.params;
-        const { name, type, ip, status } = req.body;
+        const { name, type, ip, status, port, protocol, sdkType, deviceToken, companyId, branchId } = req.body;
+
+        // Update Tenant with SDK credentials if provided
+        if (req.body.sdkApiKey || req.body.sdkApiSecret || companyId) {
+            const device = await prisma.device.findUnique({ where: { id: parseInt(id) } });
+            const targetId = companyId ? parseInt(companyId) : device.tenantId;
+            
+            if (targetId && (req.body.sdkApiKey || req.body.sdkApiSecret)) {
+                await prisma.tenant.update({
+                    where: { id: targetId },
+                    data: {
+                        sdkApiKey: req.body.sdkApiKey ? encrypt(req.body.sdkApiKey) : undefined,
+                        sdkApiSecret: req.body.sdkApiSecret ? encrypt(req.body.sdkApiSecret) : undefined
+                    }
+                });
+            }
+        }
+
         const updatedDevice = await prisma.device.update({
             where: { id: parseInt(id) },
             data: {
                 name,
                 type,
                 ipAddress: ip,
-                status
+                status,
+                port: port ? parseInt(port) : undefined,
+                protocol,
+                sdkType,
+                deviceToken,
+                companyId: companyId ? parseInt(companyId) : undefined,
+                branchId: branchId ? parseInt(branchId) : undefined
             }
         });
         res.json(updatedDevice);
@@ -931,6 +1041,7 @@ const updateGlobalSettings = async (req, res) => {
                 supportEmail: req.body.supportEmail,
                 contactPhone: req.body.contactPhone,
                 contactAddress: req.body.contactAddress,
+                supportNumber: req.body.supportNumber,
                 currency: req.body.currency,
                 timezone: req.body.timezone
             }
@@ -1051,6 +1162,7 @@ const addStaffMember = async (req, res) => {
         const {
             role = 'STAFF', branch,
             joiningDate, baseSalary, commission,
+            avatar,
             ...restUserData
         } = req.body;
         let tenantId = req.user.tenantId;
@@ -1064,6 +1176,19 @@ const addStaffMember = async (req, res) => {
                 if (altTenant) tenantId = altTenant.id;
             }
         }
+ 
+        let avatarUrl = avatar || null;
+        if (avatar && avatar.startsWith('data:image')) {
+            try {
+                const uploadResponse = await cloudinary.uploader.upload(avatar, {
+                    folder: 'gym/staff',
+                    resource_type: 'image'
+                });
+                avatarUrl = uploadResponse.secure_url;
+            } catch (uploadError) {
+                console.error('Cloudinary upload failure:', uploadError);
+            }
+        }
 
         const bcrypt = require('bcryptjs');
         const hashedPassword = await bcrypt.hash(restUserData.password || '123456', 10);
@@ -1075,6 +1200,7 @@ const addStaffMember = async (req, res) => {
                 ...safeUserData,
                 password: hashedPassword,
                 role,
+                avatar: avatarUrl,
                 tenantId: tenantId || null,
                 joinedDate: joiningDate ? new Date(joiningDate) : new Date(),
                 baseSalary: (baseSalary !== undefined && baseSalary !== null && baseSalary !== '') ? parseFloat(baseSalary) : null,
@@ -1116,12 +1242,25 @@ const updateStaffMember = async (req, res) => {
             joiningDate, status, baseSalary, commission, accountNumber, ifsc,
             trainerConfig, salesConfig, managerConfig, documents,
             idType, idNumber, specialization, certifications, salaryType, hourlyRate, ptSharePercent, bio,
-            position, bankName, taxId, tenantId
+            position, bankName, taxId, tenantId, avatar, gender
         } = req.body;
 
         console.log(`[updateStaffMember] Received update for ID ${id}:`, {
             position, commission, bankName, taxId, ifsc, accountNumber, role
         });
+ 
+        let avatarUrl = avatar;
+        if (avatar && avatar.startsWith('data:image')) {
+            try {
+                const uploadResponse = await cloudinary.uploader.upload(avatar, {
+                    folder: 'gym/staff',
+                    resource_type: 'image'
+                });
+                avatarUrl = uploadResponse.secure_url;
+            } catch (uploadError) {
+                console.error('Cloudinary upload failure:', uploadError);
+            }
+        }
 
         const existingUser = await prisma.user.findUnique({ where: { id: parseInt(id) } });
         if (!existingUser) return res.status(404).json({ message: 'User not found' });
@@ -1137,6 +1276,7 @@ const updateStaffMember = async (req, res) => {
         if (accountNumber !== undefined) updateData.accountNumber = accountNumber;
         if (ifsc !== undefined) updateData.ifsc = ifsc;
         if (documents !== undefined) updateData.documents = documents ? JSON.stringify(documents) : null;
+        if (avatarUrl !== undefined) updateData.avatar = avatarUrl;
 
         if (joiningDate) {
             updateData.joinedDate = new Date(joiningDate);
@@ -1174,6 +1314,7 @@ const updateStaffMember = async (req, res) => {
         if (position !== undefined) newConfigObject.position = position;
         if (bankName !== undefined) newConfigObject.bankName = bankName;
         if (taxId !== undefined) newConfigObject.taxId = taxId;
+        if (gender !== undefined) newConfigObject.gender = gender;
 
         updateData.config = JSON.stringify(newConfigObject);
 
@@ -1181,6 +1322,10 @@ const updateStaffMember = async (req, res) => {
             where: { id: parseInt(id) },
             data: updateData
         });
+
+        // Background Sync to MIPS
+        setImmediate(() => syncUserToMips(updatedStaff));
+
         res.json(updatedStaff);
     } catch (error) {
         console.error('Error updating staff member:', error);

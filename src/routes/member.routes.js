@@ -13,6 +13,7 @@ const {
     unfreezeMembership,
     getInvoices,
     payInvoice,
+    failPayment,
     getWalletBalance,
     getSavedCards,
     addSavedCard,
@@ -33,7 +34,10 @@ const {
     getMemberAttendance,
     memberCheckIn,
     memberCheckOut,
-    getMemberCheckInStatus
+    getMemberCheckInStatus,
+    getPTAccounts,
+    createPTBooking,
+    requestDietPlan
 } = require('../controllers/member.controller');
 const {
     getProgress,
@@ -59,6 +63,8 @@ router.post('/plan/cancel', memberOnly, cancelMembership);
 router.post('/membership/freeze', memberOnly, freezeMembership);
 router.post('/membership/unfreeze', memberOnly, unfreezeMembership);
 router.get('/membership-details', memberOnly, getMembershipDetails);
+router.get('/pt-accounts', memberOnly, getPTAccounts);
+router.post('/pt-sessions', memberOnly, createPTBooking);
 router.get('/service-requests', memberOnly, getServiceRequests);
 router.post('/service-requests', memberOnly, addServiceRequest);
 router.get('/profile', memberOnly, getMemberProfile);
@@ -80,6 +86,7 @@ router.post('/wallet/add', memberOnly, addWalletCredit);
 router.get('/wallet/balance', memberOnly, getWalletBalance);
 router.get('/invoices', memberOnly, getInvoices);
 router.post('/invoices/:id/pay', memberOnly, payInvoice);
+router.post('/invoices/:id/fail', memberOnly, failPayment);
 router.get('/cards', memberOnly, getSavedCards);
 router.post('/cards', memberOnly, addSavedCard);
 router.delete('/cards/:id', memberOnly, deleteSavedCard);
@@ -99,6 +106,7 @@ router.get('/workout-plans', managementOrMemberOrTrainer, getWorkoutPlans);
 
 // Diet Plans
 router.get('/diet-plans', managementOrMemberOrTrainer, getDietPlans);
+router.post('/diet-plans/request', memberOnly, requestDietPlan);
 
 // Referrals
 router.get('/referrals', memberOnly, getMyReferrals);

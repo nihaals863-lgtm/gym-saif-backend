@@ -13,7 +13,43 @@ const login = async (req, res) => {
         });
 
         if (!user || !(await bcrypt.compare(password, user.password))) {
+            // Log failed login attempt
+            await prisma.auditLog.create({
+                data: {
+                    userId: user ? user.id : 0, 
+                    action: 'Login Failure',
+                    module: 'Error',
+                    affectedEntity: `User Login: ${email}`,
+                    details: `Failed login attempt for ${email}: Invalid credentials`,
+                    ip: req.ip || req.headers['x-forwarded-for'] || '0.0.0.0',
+                    status: 'Open'
+                }
+            });
             return res.status(401).json({ message: 'Invalid email or password' });
+        }
+
+        // Check for suspended tenant
+        if (user.role !== 'SUPER_ADMIN' && user.tenant?.status === 'Suspended') {
+            const settings = await prisma.saaSSettings.findFirst();
+            const supportNum = settings?.supportNumber || 'our support team';
+            
+            // Log access attempt to suspended tenant
+            await prisma.auditLog.create({
+                data: {
+                    userId: user.id,
+                    action: 'Suspended Access Attempt',
+                    module: 'Error',
+                    affectedEntity: `Tenant ID: ${user.tenantId}`,
+                    details: `User ${user.email} tried to access suspended branch ${user.tenant?.name}`,
+                    ip: req.ip || req.headers['x-forwarded-for'] || '0.0.0.0',
+                    status: 'Open'
+                }
+            });
+
+            return res.status(403).json({ 
+                message: `This gym is currently suspended. Please contact support at ${supportNum}.`,
+                supportNumber: supportNum 
+            });
         }
 
         const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET, {
@@ -27,13 +63,26 @@ const login = async (req, res) => {
             maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
         });
 
+        // Log the login event
+        await prisma.auditLog.create({
+            data: {
+                userId: user.id,
+                action: 'Login',
+                module: 'Auth',
+                details: `User ${user.email} logged in successfully`,
+                ip: req.ip || req.headers['x-forwarded-for'] || '0.0.0.0',
+                status: 'Success'
+            }
+        });
+
         res.json({
             id: user.id,
             name: user.name,
             email: user.email,
             role: user.role,
             tenantId: user.tenantId,
-            branchName: user.tenant?.branchName
+            branchName: user.tenant?.branchName,
+            token
         });
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -122,6 +171,7 @@ const getMe = async (req, res) => {
                 month: 'short',
                 year: 'numeric'
             }),
+            token: req.cookies.token || (req.headers.authorization ? req.headers.authorization.split(' ')[1] : undefined),
             ...memberData
         });
     } catch (error) {
@@ -165,4 +215,27 @@ const updateProfile = async (req, res) => {
     }
 };
 
-module.exports = { login, logout, getMe, updateProfile };
+const changePassword = async (req, res) => {
+    try {
+        const { currentPassword, newPassword } = req.body;
+        const user = await prisma.user.findUnique({
+            where: { id: req.user.id }
+        });
+
+        if (!user || !(await bcrypt.compare(currentPassword, user.password))) {
+            return res.status(401).json({ message: 'Invalid current password' });
+        }
+
+        const hashedPassword = await bcrypt.hash(newPassword, 10);
+        await prisma.user.update({
+            where: { id: req.user.id },
+            data: { password: hashedPassword }
+        });
+
+        res.json({ message: 'Password changed successfully' });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+module.exports = { login, logout, getMe, updateProfile, changePassword };

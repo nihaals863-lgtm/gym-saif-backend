@@ -20,6 +20,8 @@ router.get('/accounts', ptController.getActiveAccounts);
 
 // Sessions
 router.post('/sessions', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER', 'STAFF', 'TRAINER'), ptController.logSession);
+router.patch('/sessions/:id/status', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER', 'STAFF', 'TRAINER'), ptController.updateSessionStatus);
 router.get('/sessions', ptController.getSessions);
+router.get('/sessions/booked-slots', ptController.getTrainerBookedSlots);
 
 module.exports = router;

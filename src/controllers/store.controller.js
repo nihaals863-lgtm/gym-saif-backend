@@ -382,16 +382,35 @@ exports.deleteProduct = async (req, res) => {
     }
 };
 
+const fs = require('fs');
+const path = require('path');
+
 exports.checkout = async (req, res) => {
     try {
         const { tenantId: reqTenantId, role } = req.user;
-        const { memberId, items, total, guestInfo, tenantId: bodyTenantId, paymentMode, referenceNumber } = req.body;
+        let { memberId, items, total, guestInfo, tenantId: bodyTenantId, paymentMode, referenceNumber, cartItems, totalAmount, couponCode } = req.body;
+        
+        // Normalize payload: Support both POS.jsx and StorePage.jsx formats
+        if (!items && cartItems) items = cartItems;
+        if (!total && totalAmount) total = totalAmount;
+        
+        if (!items || !Array.isArray(items)) {
+            return res.status(400).json({ message: 'Cart items are required and must be an array' });
+        }
+        
+        // Normalize items: Map 'id' to 'productId' if necessary
+        const normalizedItems = items.map(item => ({
+            productId: item.productId || item.id,
+            quantity: item.quantity,
+            price: item.price
+        }));
+
+        const itemsToProcess = normalizedItems;
 
         const order = await prisma.$transaction(async (tx) => {
             let actualMemberId = null;
             let actualTenantId = reqTenantId || 1;
 
-            // Allow Super Admin or Branch Admin/Manager to checkout on behalf of a specific branch
             if (['SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'].includes(role) && bodyTenantId) {
                 actualTenantId = parseInt(bodyTenantId);
             }
@@ -406,11 +425,11 @@ exports.checkout = async (req, res) => {
                 actualMemberId = parseInt(memberId);
             }
 
-            let finalTotal = 0;
+            let subtotal = 0;
             let itemsCount = 0;
             const orderItemsInput = [];
 
-            for (const item of items) {
+            for (const item of itemsToProcess) {
                 const product = await tx.storeProduct.findUnique({ where: { id: parseInt(item.productId) } });
                 if (!product) throw new Error(`Product ${item.productId} not found`);
                 if (product.stock < item.quantity) throw new Error(`Insufficient stock for ${product.name}`);
@@ -423,7 +442,7 @@ exports.checkout = async (req, res) => {
                     }
                 });
 
-                finalTotal += parseFloat(product.price) * parseInt(item.quantity);
+                subtotal += parseFloat(product.price) * parseInt(item.quantity);
                 itemsCount += parseInt(item.quantity);
 
                 orderItemsInput.push({
@@ -432,6 +451,67 @@ exports.checkout = async (req, res) => {
                     priceAtBuy: product.price
                 });
             }
+
+            let discountAmount = 0;
+            let appliedCouponId = null;
+
+            if (couponCode) {
+                const coupon = await tx.coupon.findUnique({ where: { code: couponCode } });
+                if (!coupon) throw new Error("Invalid coupon code");
+                if (coupon.status !== 'Active') throw new Error("Coupon is inactive");
+                
+                const now = new Date();
+                if (coupon.startDate && now < new Date(coupon.startDate)) throw new Error("Coupon is not yet valid");
+                if (coupon.endDate && now > new Date(coupon.endDate)) throw new Error("Coupon has expired");
+                if (coupon.maxUses > 0 && coupon.usedCount >= coupon.maxUses) throw new Error("Coupon use limit reached");
+                if (subtotal < parseFloat(coupon.minPurchase || 0)) throw new Error(`Minimum purchase of ₹${coupon.minPurchase} required`);
+
+                // Check applicable service
+                const service = coupon.applicableService || 'All';
+                if (service !== 'All' && service !== 'POS') throw new Error("This coupon is not valid for store purchases");
+
+                // Check visibility
+                if (coupon.visibilityType === 'Targeted' && actualMemberId) {
+                    const targeted = coupon.targetedMemberIds ? JSON.parse(coupon.targetedMemberIds) : [];
+                    if (!targeted.map(String).includes(String(actualMemberId))) {
+                        throw new Error("This coupon is not available for your account");
+                    }
+                }
+
+                // Check per-member usage
+                if (actualMemberId) {
+                    const alreadyUsed = await tx.usedCoupon.findFirst({
+                        where: { couponId: coupon.id, memberId: actualMemberId }
+                    });
+                    if (alreadyUsed) throw new Error("You have already used this coupon");
+                }
+
+                if (coupon.type === 'Percentage') {
+                    discountAmount = (subtotal * parseFloat(coupon.value)) / 100;
+                    // Apply maximum discount cap if set
+                    if (coupon.maximumDiscount && discountAmount > parseFloat(coupon.maximumDiscount)) {
+                        discountAmount = parseFloat(coupon.maximumDiscount);
+                    }
+                } else {
+                    discountAmount = parseFloat(coupon.value);
+                }
+                discountAmount = Math.min(discountAmount, subtotal);
+
+                appliedCouponId = coupon.id;
+                await tx.coupon.update({
+                    where: { id: coupon.id },
+                    data: { usedCount: { increment: 1 } }
+                });
+
+                // Record per-member usage
+                if (actualMemberId) {
+                    await tx.usedCoupon.create({
+                        data: { couponId: coupon.id, memberId: actualMemberId }
+                    });
+                }
+            }
+
+            const finalTotal = Math.max(0, subtotal - discountAmount);
 
             const newOrder = await tx.storeOrder.create({
                 data: {
@@ -444,13 +524,61 @@ exports.checkout = async (req, res) => {
                     total: finalTotal,
                     paymentMode: paymentMode || 'Cash',
                     referenceNumber: referenceNumber || null,
-                    status: 'Completed', // POS orders are typically completed instantly
+                    status: 'Completed',
+                    couponCode: couponCode || null,
+                    discountAmount: discountAmount > 0 ? discountAmount : 0,
                     items: {
                         create: orderItemsInput
                     }
+                },
+                include: {
+                    items: {
+                        include: {
+                            product: true
+                        }
+                    }
                 }
             });
-            return newOrder;
+
+            // Create an actual Invoice record for financial tracking
+            const invoiceItems = [];
+            for (const item of newOrder.items) {
+                invoiceItems.push({
+                    description: item.product?.name || `Product #${item.productId}`,
+                    quantity: item.quantity,
+                    rate: item.priceAtBuy,
+                    amount: parseFloat(item.quantity) * parseFloat(item.priceAtBuy)
+                });
+            }
+
+            // Add discount as a negative item if applicable
+            if (discountAmount > 0) {
+                invoiceItems.push({
+                    description: `Discount (${couponCode})`,
+                    quantity: 1,
+                    rate: -discountAmount,
+                    amount: -discountAmount
+                });
+            }
+
+            const invoice = await tx.invoice.create({
+                data: {
+                    tenantId: actualTenantId,
+                    invoiceNumber: `POS-${Date.now()}`,
+                    memberId: actualMemberId,
+                    amount: finalTotal,
+                    status: 'Paid',
+                    dueDate: new Date(),
+                    paidDate: new Date(),
+                    paymentMode: paymentMode || 'Cash',
+                    notes: `${referenceNumber ? `POS Order #${newOrder.id} [Ref: ${referenceNumber}]` : `POS Order #${newOrder.id}`}${couponCode ? ` (Coupon: ${couponCode})` : ''}`,
+                    items: {
+                        create: invoiceItems
+                    }
+                }
+            });
+
+            return { ...newOrder, invoice, discountAmount };
         });
 
         res.status(201).json(order);
@@ -459,6 +587,8 @@ exports.checkout = async (req, res) => {
         res.status(500).json({ message: error.message });
     }
 };
+
+
 
 exports.getOrders = async (req, res) => {
     try {
@@ -692,7 +822,8 @@ exports.getCouponStats = async (req, res) => {
 
 exports.createCoupon = async (req, res) => {
     try {
-        const { code, description, type, value, minPurchase, maxUses, startDate, endDate, status } = req.body;
+        const { code, description, type, value, minPurchase, maxUses, startDate, endDate, status,
+            maximumDiscount, applicableService, visibilityType, targetedMemberIds } = req.body;
         const { tenantId: userTenantId, role, email, name: userName } = req.user;
         const rawBranchId = req.body.branchId || req.headers['x-tenant-id'];
         const branchId = rawBranchId && rawBranchId !== 'undefined' ? rawBranchId : null;
@@ -715,6 +846,18 @@ exports.createCoupon = async (req, res) => {
             targetTenantIds = [userTenantId];
         }
 
+        // Normalize targetedMemberIds to JSON string
+        let targetedMemberIdsJson = null;
+        if (targetedMemberIds) {
+            if (Array.isArray(targetedMemberIds)) {
+                targetedMemberIdsJson = JSON.stringify(targetedMemberIds);
+            } else if (typeof targetedMemberIds === 'string') {
+                // Allow comma-separated string input
+                const ids = targetedMemberIds.split(',').map(s => s.trim()).filter(Boolean);
+                targetedMemberIdsJson = JSON.stringify(ids);
+            }
+        }
+
         const coupons = await Promise.all(targetTenantIds.map(tId =>
             prisma.coupon.create({
                 data: {
@@ -724,10 +867,14 @@ exports.createCoupon = async (req, res) => {
                     type,
                     value: parseFloat(value),
                     minPurchase: minPurchase ? parseFloat(minPurchase) : 0,
+                    maximumDiscount: maximumDiscount ? parseFloat(maximumDiscount) : null,
                     maxUses: maxUses ? parseInt(maxUses) : 0,
                     startDate: startDate ? new Date(startDate) : new Date(),
                     endDate: endDate ? new Date(endDate) : null,
                     status: status || 'Active',
+                    applicableService: applicableService || 'All',
+                    visibilityType: visibilityType || 'Public',
+                    targetedMemberIds: targetedMemberIdsJson,
                 }
             })
         ));
@@ -742,12 +889,25 @@ exports.createCoupon = async (req, res) => {
     }
 };
 
+
+
 exports.updateCoupon = async (req, res) => {
     try {
         const { id } = req.params;
-        const { code, description, type, value, minPurchase, maxUses, startDate, endDate, status } = req.body;
-        const rawBranchId = req.body.tenantId || req.headers['x-tenant-id'];
-        const branchId = rawBranchId && rawBranchId !== 'all' && rawBranchId !== 'undefined' ? rawBranchId : null;
+        const { code, description, type, value, minPurchase, maxUses, startDate, endDate, status,
+            maximumDiscount, applicableService, visibilityType, targetedMemberIds } = req.body;
+
+        let targetedMemberIdsJson = undefined;
+        if (targetedMemberIds !== undefined) {
+            if (targetedMemberIds === null || targetedMemberIds === '') {
+                targetedMemberIdsJson = null;
+            } else if (Array.isArray(targetedMemberIds)) {
+                targetedMemberIdsJson = JSON.stringify(targetedMemberIds);
+            } else if (typeof targetedMemberIds === 'string') {
+                const ids = targetedMemberIds.split(',').map(s => s.trim()).filter(Boolean);
+                targetedMemberIdsJson = JSON.stringify(ids);
+            }
+        }
 
         const coupon = await prisma.coupon.update({
             where: { id: parseInt(id) },
@@ -757,11 +917,14 @@ exports.updateCoupon = async (req, res) => {
                 type,
                 value: value ? parseFloat(value) : undefined,
                 minPurchase: minPurchase !== undefined ? parseFloat(minPurchase) : undefined,
+                maximumDiscount: maximumDiscount !== undefined ? (maximumDiscount ? parseFloat(maximumDiscount) : null) : undefined,
                 maxUses: maxUses !== undefined ? parseInt(maxUses) : undefined,
                 startDate: startDate ? new Date(startDate) : undefined,
                 endDate: endDate ? new Date(endDate) : null,
                 status,
-                tenantId: branchId ? parseInt(branchId) : undefined,
+                applicableService: applicableService || undefined,
+                visibilityType: visibilityType || undefined,
+                targetedMemberIds: targetedMemberIdsJson,
             }
         });
 
@@ -771,6 +934,8 @@ exports.updateCoupon = async (req, res) => {
         res.status(500).json({ message: error.message });
     }
 };
+
+
 
 exports.deleteCoupon = async (req, res) => {
     try {
@@ -796,6 +961,305 @@ exports.deleteCoupon = async (req, res) => {
         res.status(500).json({ message: error.message });
     }
 };
+
+exports.validateCoupon = async (req, res) => {
+    try {
+        const { code } = req.params;
+        const { totalAmount, service } = req.query;
+        const { tenantId: userTenantId, role, id: userId } = req.user;
+
+        const coupon = await prisma.coupon.findUnique({
+            where: { code }
+        });
+
+        if (!coupon) {
+            return res.status(404).json({ message: 'Invalid coupon code' });
+        }
+
+        if (coupon.status !== 'Active') {
+            return res.status(400).json({ message: 'Coupon is inactive' });
+        }
+
+        const now = new Date();
+        if (coupon.startDate && now < new Date(coupon.startDate)) {
+            return res.status(400).json({ message: 'Coupon is not yet valid' });
+        }
+
+        if (coupon.endDate && now > new Date(coupon.endDate)) {
+            return res.status(400).json({ message: 'Coupon has expired' });
+        }
+
+        if (coupon.maxUses > 0 && coupon.usedCount >= coupon.maxUses) {
+            return res.status(400).json({ message: 'Coupon use limit reached' });
+        }
+
+        if (totalAmount && parseFloat(totalAmount) < parseFloat(coupon.minPurchase || 0)) {
+            return res.status(400).json({ message: `Minimum purchase of ₹${coupon.minPurchase} required` });
+        }
+
+        // Check applicable service
+        const requestedService = service || 'POS';
+        const couponService = coupon.applicableService || 'All';
+        if (couponService !== 'All' && couponService !== requestedService) {
+            return res.status(400).json({ message: `This coupon is only valid for ${couponService} purchases` });
+        }
+
+        // Branch check
+        if (role !== 'SUPER_ADMIN' && coupon.tenantId && coupon.tenantId !== userTenantId) {
+            return res.status(403).json({ message: 'Coupon not valid for this branch' });
+        }
+
+        // Visibility and per-member usage check for members
+        if (role === 'MEMBER') {
+            const memberRaw = await prisma.$queryRaw`SELECT id FROM member WHERE userId = ${userId}`;
+            const member = memberRaw[0];
+            if (member) {
+                // Targeted visibility check
+                if (coupon.visibilityType === 'Targeted') {
+                    const targeted = coupon.targetedMemberIds ? JSON.parse(coupon.targetedMemberIds) : [];
+                    if (!targeted.map(String).includes(String(member.id))) {
+                        return res.status(403).json({ message: 'This coupon is not available for your account' });
+                    }
+                }
+                // Per-member usage check
+                const alreadyUsed = await prisma.usedCoupon.findFirst({
+                    where: { couponId: coupon.id, memberId: member.id }
+                });
+                if (alreadyUsed) {
+                    return res.status(400).json({ message: 'You have already used this coupon' });
+                }
+            }
+        }
+
+        // Calculate discount
+        const amount = totalAmount ? parseFloat(totalAmount) : 0;
+        let discountAmount = 0;
+        if (coupon.type === 'Percentage') {
+            discountAmount = (amount * parseFloat(coupon.value)) / 100;
+            if (coupon.maximumDiscount && discountAmount > parseFloat(coupon.maximumDiscount)) {
+                discountAmount = parseFloat(coupon.maximumDiscount);
+            }
+        } else {
+            discountAmount = parseFloat(coupon.value);
+        }
+        discountAmount = Math.min(discountAmount, amount);
+
+        res.json({
+            valid: true,
+            discountAmount: parseFloat(discountAmount.toFixed(2)),
+            finalAmount: parseFloat((amount - discountAmount).toFixed(2)),
+            coupon: {
+                id: coupon.id,
+                code: coupon.code,
+                type: coupon.type,
+                value: parseFloat(coupon.value),
+                maximumDiscount: coupon.maximumDiscount ? parseFloat(coupon.maximumDiscount) : null,
+                description: coupon.description,
+                applicableService: coupon.applicableService,
+                visibilityType: coupon.visibilityType,
+            }
+        });
+    } catch (error) {
+        console.error("Validate coupon error:", error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// Get available coupons for a logged-in member
+exports.getAvailableCoupons = async (req, res) => {
+    try {
+        const { id: userId, tenantId: userTenantId } = req.user;
+
+        // Find the member record
+        const memberRaw = await prisma.$queryRaw`SELECT * FROM member WHERE userId = ${userId}`;
+        const member = memberRaw[0];
+        if (!member) return res.json([]);
+
+        const now = new Date();
+
+        // Fetch all active, non-private coupons for the member's branch
+        const coupons = await prisma.coupon.findMany({
+            where: {
+                tenantId: member.tenantId,
+                status: 'Active',
+                visibilityType: { in: ['Public', 'Targeted'] },
+                startDate: { lte: now },
+                AND: [
+                    {
+                        OR: [
+                            { endDate: null },
+                            { endDate: { gte: now } }
+                        ]
+                    },
+                    {
+                        OR: [
+                            { maxUses: 0 },
+                            { maxUses: null },
+                            { usedCount: { lt: prisma.coupon.fields.maxUses } }
+                        ]
+                    }
+                ]
+            },
+            orderBy: { createdAt: 'desc' }
+        });
+
+        // Get coupon IDs already used by this member
+        const usedCoupons = await prisma.usedCoupon.findMany({
+            where: { memberId: member.id },
+            select: { couponId: true }
+        });
+        const usedCouponIds = new Set(usedCoupons.map(u => u.couponId));
+
+        // Filter: remove ones already used, and check targeted membership
+        const available = coupons.filter(c => {
+            // Skip if already used by this member
+            if (usedCouponIds.has(c.id)) return false;
+            // Check usage limit
+            if (c.maxUses > 0 && c.usedCount >= c.maxUses) return false;
+            // If targeted, check if member is in the list
+            if (c.visibilityType === 'Targeted') {
+                const targeted = c.targetedMemberIds ? JSON.parse(c.targetedMemberIds) : [];
+                return targeted.map(String).includes(String(member.id));
+            }
+            return true;
+        });
+
+        res.json(available.map(c => ({
+            id: c.id,
+            code: c.code,
+            description: c.description,
+            type: c.type,
+            value: parseFloat(c.value),
+            maximumDiscount: c.maximumDiscount ? parseFloat(c.maximumDiscount) : null,
+            minPurchase: c.minPurchase ? parseFloat(c.minPurchase) : 0,
+            applicableService: c.applicableService,
+            visibilityType: c.visibilityType,
+            endDate: c.endDate,
+        })));
+    } catch (error) {
+        console.error("Get available coupons error:", error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// Admin endpoint to get available coupons for a specific member
+exports.getAvailableCouponsForMember = async (req, res) => {
+    try {
+        const { memberId } = req.params;
+        const tenantId = req.user.tenantId;
+
+        // Find the member record by ID directly instead of userId
+        const member = await prisma.member.findFirst({
+            where: {
+                id: memberId,
+                tenantId: tenantId
+            }
+        });
+
+        if (!member) {
+            // Need to still return public coupons if no member was selected
+            const now = new Date();
+            const coupons = await prisma.coupon.findMany({
+                where: {
+                    tenantId: tenantId,
+                    status: 'Active',
+                    visibilityType: 'Public', // only return public coupons when no member is selected
+                    startDate: { lte: now },
+                    AND: [
+                        { OR: [{ endDate: null }, { endDate: { gte: now } }] },
+                        { OR: [{ maxUses: 0 }, { maxUses: null }, { usedCount: { lt: prisma.coupon.fields.maxUses } }] }
+                    ]
+                },
+                orderBy: { createdAt: 'desc' }
+            });
+
+            const available = coupons.filter(c => {
+                if (c.maxUses > 0 && c.usedCount >= c.maxUses) return false;
+                return true;
+            });
+
+            return res.json(available.map(c => ({
+                id: c.id,
+                code: c.code,
+                description: c.description,
+                type: c.type,
+                value: parseFloat(c.value),
+                maximumDiscount: c.maximumDiscount ? parseFloat(c.maximumDiscount) : null,
+                minPurchase: c.minPurchase ? parseFloat(c.minPurchase) : 0,
+                applicableService: c.applicableService,
+                visibilityType: c.visibilityType,
+                endDate: c.endDate,
+            })));
+        }
+
+        const now = new Date();
+
+        // Fetch all active, non-private coupons for the branch
+        const coupons = await prisma.coupon.findMany({
+            where: {
+                tenantId: tenantId, // Use the staff's tenant ID
+                status: 'Active',
+                visibilityType: { in: ['Public', 'Targeted'] },
+                startDate: { lte: now },
+                AND: [
+                    {
+                        OR: [
+                            { endDate: null },
+                            { endDate: { gte: now } }
+                        ]
+                    },
+                    {
+                        OR: [
+                            { maxUses: 0 },
+                            { maxUses: null },
+                            { usedCount: { lt: prisma.coupon.fields.maxUses } }
+                        ]
+                    }
+                ]
+            },
+            orderBy: { createdAt: 'desc' }
+        });
+
+        // Get coupon IDs already used by this member
+        const usedCoupons = await prisma.usedCoupon.findMany({
+            where: { memberId: member.id },
+            select: { couponId: true }
+        });
+        const usedCouponIds = new Set(usedCoupons.map(u => u.couponId));
+
+        // Filter: remove ones already used, and check targeted membership
+        const available = coupons.filter(c => {
+            // Skip if already used by this member
+            if (usedCouponIds.has(c.id)) return false;
+            // Check usage limit
+            if (c.maxUses > 0 && c.usedCount >= c.maxUses) return false;
+            // If targeted, check if member is in the list
+            if (c.visibilityType === 'Targeted') {
+                const targeted = c.targetedMemberIds ? JSON.parse(c.targetedMemberIds) : [];
+                return targeted.map(String).includes(String(member.id));
+            }
+            return true;
+        });
+
+        res.json(available.map(c => ({
+            id: c.id,
+            code: c.code,
+            description: c.description,
+            type: c.type,
+            value: parseFloat(c.value),
+            maximumDiscount: c.maximumDiscount ? parseFloat(c.maximumDiscount) : null,
+            minPurchase: c.minPurchase ? parseFloat(c.minPurchase) : 0,
+            applicableService: c.applicableService,
+            visibilityType: c.visibilityType,
+            endDate: c.endDate,
+        })));
+    } catch (error) {
+        console.error("Get available member coupons error:", error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+
 
 exports.getCategories = async (req, res) => {
     try {

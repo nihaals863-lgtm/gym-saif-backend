@@ -3,6 +3,7 @@ const prisma = require('../config/prisma');
 const cloudinary = require('../utils/cloudinary');
 const PDFDocument = require('pdfkit');
 const QRCode = require('qrcode');
+const { buildMemberObj, upsertPersonInMips, uploadPhotoToMips, assignPhotoToPerson, syncPersonToDevices, syncUserToMips } = require('../utils/mipsSync');
 
 // --- MEMBER MANAGEMENT ---
 
@@ -41,8 +42,7 @@ const getAllMembers = async (req, res) => {
                     },
                     select: { id: true }
                 });
-                const managedBranchIds = branches.map(b => b.id);
-                where.tenantId = { in: managedBranchIds };
+                where.tenantId = { in: branches.map(b => b.id) };
             }
         }
 
@@ -51,11 +51,12 @@ const getAllMembers = async (req, res) => {
         }
 
         if (search) {
+            const searchLower = search.trim();
             where.OR = [
-                { name: { contains: search } },
-                { memberId: { contains: search } },
-                { phone: { contains: search } },
-                { email: { contains: search } }
+                { name: { contains: searchLower } },
+                { memberId: { contains: searchLower } },
+                { phone: { contains: searchLower } },
+                { email: { contains: searchLower } }
             ];
         }
 
@@ -112,11 +113,15 @@ const addMember = async (req, res) => {
     try {
         const { tenantId: userTenantId, email: userEmail, name: userName } = req.user;
         const {
-            name, email, phone, planId, duration, avatar, benefits, branchId,
-            gender, dob, source, referralCode, idType, idNumber, address,
-            emergencyName, emergencyPhone, fitnessGoal, healthConditions, medicalHistory,
-            startDate
+            name, email, phone, gender, avatar, planId,
+            startDate, duration, branchIds, effectiveBranchId: effB,
+            benefits, healthConditions, medicalHistory, fitnessGoal,
+            emergencyName, emergencyPhone, dob, source,
+            referralCode, idType, idNumber, address,
+            trainerId, branchId
         } = req.body;
+
+
 
         let avatarUrl = null;
         if (avatar && avatar.startsWith('data:image')) {
@@ -190,11 +195,32 @@ const addMember = async (req, res) => {
                 }
             });
 
+            let planObj = null;
+            if (planId) {
+                planObj = await prisma.membershipPlan.findFirst({
+                    where: { id: parseInt(planId), tenantId: tId }
+                });
+            }
+
             const joinDate = startDate ? new Date(startDate) : new Date();
             let expiryDate = null;
-            if (planId && duration) {
+            let finalPrice = 0;
+            const cycleMultiplier = parseInt(duration) || 1;
+
+            if (planObj) {
                 expiryDate = new Date(joinDate);
-                expiryDate.setMonth(expiryDate.getMonth() + parseInt(duration));
+                const totalDurationParam = planObj.duration * cycleMultiplier;
+
+                if (planObj.durationType === 'Days') {
+                    expiryDate.setDate(expiryDate.getDate() + totalDurationParam);
+                } else if (planObj.durationType === 'Weeks') {
+                    expiryDate.setDate(expiryDate.getDate() + (totalDurationParam * 7));
+                } else if (planObj.durationType === 'Years') {
+                    expiryDate.setFullYear(expiryDate.getFullYear() + totalDurationParam);
+                } else {
+                    expiryDate.setMonth(expiryDate.getMonth() + totalDurationParam);
+                }
+                finalPrice = parseFloat(planObj.price) * cycleMultiplier;
             }
 
             const newMember = await prisma.member.create({
@@ -203,7 +229,7 @@ const addMember = async (req, res) => {
                     userId: newUser.id,
                     tenantId: tId,
                     name,
-                    email: memberEmailForUser,
+                    email: email || memberEmailForUser,
                     phone,
                     planId: planId ? parseInt(planId) : null,
                     status: 'Active',
@@ -220,29 +246,34 @@ const addMember = async (req, res) => {
                     fitnessGoal,
                     medicalHistory: healthConditions || medicalHistory,
                     joinDate: joinDate,
-                    expiryDate: expiryDate, // Auto set based on duration
-                    benefits: Array.isArray(benefits) ? JSON.stringify(benefits) : (benefits || null)
+                    expiryDate: expiryDate, // Auto set based on plan duration
+                    benefits: Array.isArray(benefits) ? JSON.stringify(benefits) : (benefits || null),
+                    trainerId: trainerId ? parseInt(trainerId) : null
                 }
             });
 
-            if (planId) {
-                const plan = await prisma.membershipPlan.findFirst({
-                    where: { id: parseInt(planId), tenantId: tId }
-                });
-                if (plan) {
-                    const invoiceAmount = parseFloat(plan.price) * (parseInt(duration) || 1);
-                    await prisma.invoice.create({
-                        data: {
-                            tenantId: tId,
-                            invoiceNumber: `INV-${Date.now()}-${tId}`,
-                            memberId: newMember.id,
-                            amount: invoiceAmount,
-                            paymentMode: 'Cash',
-                            status: 'Unpaid',
-                            dueDate: new Date()
+            if (planObj) {
+                await prisma.invoice.create({
+                    data: {
+                        tenantId: tId,
+                        invoiceNumber: `INV-${Date.now()}-${tId}`,
+                        memberId: newMember.id,
+                        amount: finalPrice,
+                        subtotal: finalPrice,
+                        paymentMode: 'Cash',
+                        status: 'Unpaid',
+                        dueDate: new Date(),
+                        notes: `Membership Plan: ${planObj.name} (${cycleMultiplier} Cycle)`,
+                        items: {
+                            create: [{
+                                description: `Membership Plan: ${planObj.name} (${cycleMultiplier} Cycle)`,
+                                quantity: 1,
+                                rate: finalPrice,
+                                amount: finalPrice
+                            }]
                         }
-                    });
-                }
+                    }
+                });
             }
 
             // --- NOTIFICATION ---
@@ -267,6 +298,80 @@ const addMember = async (req, res) => {
                 });
             }
             createdMembers.push(newMember);
+
+            // --- AUTO SYNC TO MIPS (fire-and-forget — non-blocking) ---
+            // Member creation succeeds even if MIPS is unreachable
+            setImmediate(async () => {
+                try {
+                    const personObj = buildMemberObj(newMember);
+                    const { personId } = await upsertPersonInMips(personObj, tId);
+
+                    if (avatarUrl) {
+                        const photoUri = await uploadPhotoToMips(avatarUrl, tId);
+                        if (photoUri) await assignPhotoToPerson(personObj.personSn, photoUri, tId);
+                    }
+
+                    await syncPersonToDevices(personId, tId);
+
+                    await prisma.member.update({
+                        where: { id: newMember.id },
+                        data: {
+                            mipsPersonSn: personObj.personSn,
+                            mipsPersonId: personId,
+                            mipsSyncStatus: 'synced',
+                            mipsSyncedAt: new Date()
+                        }
+                    });
+                    console.log(`[AutoSync] Member "${name}" synced to MIPS (branch ${tId})`);
+                } catch (mipsErr) {
+                    console.warn(`[AutoSync] MIPS sync failed for member "${name}":`, mipsErr.message);
+                    await prisma.member.update({
+                        where: { id: newMember.id },
+                        data: { mipsSyncStatus: 'failed' }
+                    }).catch(() => {});
+                }
+            });
+
+            // --- LINK OR CREATE REFERRAL LEAD ---
+            if (referralCode) {
+                try {
+                    const existingLead = await prisma.lead.findFirst({
+                        where: {
+                            tenantId: tId,
+                            OR: [
+                                { email: memberEmailForUser },
+                                { phone: phone }
+                            ],
+                            source: 'Referral'
+                        }
+                    });
+
+                    if (existingLead) {
+                        await prisma.lead.update({
+                            where: { id: existingLead.id },
+                            data: {
+                                status: 'Converted',
+                                notes: JSON.stringify({ referrerId: referralCode })
+                            }
+                        });
+                    } else {
+                        // Create a "ghost" referral lead so it shows up in Rewards tab
+                        await prisma.lead.create({
+                            data: {
+                                tenantId: tId,
+                                name: name,
+                                email: memberEmailForUser,
+                                phone: phone,
+                                source: 'Referral',
+                                status: 'Converted',
+                                notes: JSON.stringify({ referrerId: referralCode })
+                            }
+                        });
+                    }
+                } catch (referralError) {
+                    console.error('Failed to sync referral during manual member addition:', referralError);
+                }
+            }
         }
 
         if (createdMembers.length === 0 && targetBranchIds.length > 0) {
@@ -285,7 +390,31 @@ const getMemberById = async (req, res) => {
         const { id } = req.params;
         const member = await prisma.member.findUnique({
             where: { id: parseInt(id) },
-            include: { trainer: true, tenant: true, plan: true }
+            include: {
+                trainer: true,
+                tenant: true,
+                plan: true,
+                storeOrders: {
+                    include: {
+                        items: {
+                            include: {
+                                product: true
+                            }
+                        }
+                    },
+                    orderBy: {
+                        createdAt: 'desc'
+                    }
+                },
+                invoices: {
+                    orderBy: {
+                        createdAt: 'desc'
+                    },
+                    include: {
+                        items: true
+                    }
+                }
+            }
         });
         if (!member) return res.status(404).json({ message: 'Member not found' });
 
@@ -311,7 +440,8 @@ const updateMember = async (req, res) => {
             name, email, phone, gender, avatar, planId,
             startDate, status, benefits, medicalHistory, healthConditions,
             fitnessGoal, emergencyName, emergencyPhone,
-            dob, source, referralCode, idType, idNumber, address
+            dob, source, referralCode, idType, idNumber, address,
+            trainerId
         } = req.body;
 
         const updateData = {
@@ -330,8 +460,25 @@ const updateMember = async (req, res) => {
             idType,
             idNumber,
             address,
-            benefits: Array.isArray(benefits) ? JSON.stringify(benefits) : (benefits || null)
+            benefits: Array.isArray(benefits) ? JSON.stringify(benefits) : (benefits || null),
+            trainerId: trainerId ? parseInt(trainerId) : null
         };
+
+        // Check if trainer is being assigned and member is active
+        if (trainerId) {
+            const memberToUpdate = await prisma.member.findUnique({
+                where: { id: parseInt(id) },
+                select: { status: true }
+            });
+
+            const effectiveStatus = status || memberToUpdate?.status;
+
+            if (effectiveStatus !== 'Active') {
+                return res.status(400).json({
+                    message: 'Trainer can only be assigned to members with an Active membership status.'
+                });
+            }
+        }
 
         if (planId) updateData.planId = parseInt(planId);
         if (startDate) updateData.joinDate = new Date(startDate);
@@ -352,6 +499,51 @@ const updateMember = async (req, res) => {
             where: { id: parseInt(id) },
             data: updateData
         });
+
+        // --- MIPS SYNC (non-blocking) ---
+        setImmediate(async () => {
+            try {
+                const personObj = buildMemberObj(updated);
+                const { personId } = await upsertPersonInMips(personObj, updated.tenantId);
+
+                if (updated.avatar) {
+                    const photoUri = await uploadPhotoToMips(updated.avatar, updated.tenantId);
+                    if (photoUri) await assignPhotoToPerson(personObj.personSn, photoUri, updated.tenantId);
+                }
+
+                await syncPersonToDevices(personId, updated.tenantId);
+
+                await prisma.member.update({
+                    where: { id: updated.id },
+                    data: {
+                        mipsPersonSn: personObj.personSn,
+                        mipsPersonId: personId,
+                        mipsSyncStatus: 'synced',
+                        mipsSyncedAt: new Date()
+                    }
+                });
+            } catch (err) {
+                console.warn(`[MIPS] Update Sync failed for member ${updated.id}:`, err.message);
+                await prisma.member.update({
+                    where: { id: updated.id },
+                    data: { mipsSyncStatus: 'failed' }
+                }).catch(() => { });
+            }
+        });
+
+        // Log the change
+        await prisma.auditLog.create({
+            data: {
+                userId: req.user.id,
+                action: 'Member Updated',
+                module: 'Membership',
+                affectedEntity: `Member ID: ${id}`,
+                details: `Details updated for member ${updated.name} (${updated.email})`,
+                ip: req.ip || '0.0.0.0',
+                status: 'Success'
+            }
+        });
+
         res.json(updated);
     } catch (error) {
         console.error('Update member error:', error);
@@ -362,9 +554,10 @@ const updateMember = async (req, res) => {
 const deleteMember = async (req, res) => {
     try {
         const { id } = req.params;
+        const memberId = parseInt(id);
         const { role, tenantId, email, name: userName } = req.user;
 
-        const member = await prisma.member.findUnique({ where: { id: parseInt(id) } });
+        const member = await prisma.member.findUnique({ where: { id: memberId } });
         if (!member) return res.status(404).json({ message: 'Member not found' });
 
         if (role !== 'SUPER_ADMIN' && member.tenantId !== tenantId) {
@@ -374,12 +567,60 @@ const deleteMember = async (req, res) => {
             if (!isOwner) return res.status(403).json({ message: 'Not authorized to delete this member' });
         }
 
-        await prisma.member.delete({ where: { id: parseInt(id) } });
+        await prisma.$transaction(async (tx) => {
+            // 1. Delete Service Requests
+            await tx.serviceRequest.deleteMany({ where: { memberId } }).catch(() => { });
+
+            // 2. Delete Bookings
+            await tx.booking.deleteMany({ where: { memberId } }).catch(() => { });
+
+            // 3. Delete Invoice Items first, then Invoices
+            const invoices = await tx.invoice.findMany({ where: { memberId }, select: { id: true } });
+            if (invoices.length > 0) {
+                const invoiceIds = invoices.map(inv => inv.id);
+                await tx.invoiceItem.deleteMany({ where: { invoiceId: { in: invoiceIds } } }).catch(() => { });
+            }
+            await tx.invoice.deleteMany({ where: { memberId } }).catch(() => { });
+
+            // 4. Delete Attendance records
+            await tx.attendance.deleteMany({ where: { memberId } }).catch(() => { });
+
+            // 5. Delete Wallet Transactions, then Wallet
+            const wallet = await tx.wallet.findFirst({ where: { memberId } }).catch(() => null);
+            if (wallet) {
+                await tx.transaction.deleteMany({ where: { walletId: wallet.id } }).catch(() => { });
+                await tx.wallet.delete({ where: { id: wallet.id } }).catch(() => { });
+            }
+
+            // 6. Delete Member Progress
+            await tx.memberProgress.deleteMany({ where: { memberId } }).catch(() => { });
+
+            // 7. Delete Feedback
+            await tx.feedback.deleteMany({ where: { memberId } }).catch(() => { });
+
+            // 8. Delete Store Order Items first, then Store Orders
+            const storeOrders = await tx.storeOrder.findMany({ where: { memberId }, select: { id: true } });
+            if (storeOrders.length > 0) {
+                const orderIds = storeOrders.map(o => o.id);
+                await tx.storeOrderItem.deleteMany({ where: { orderId: { in: orderIds } } }).catch(() => { });
+            }
+            await tx.storeOrder.deleteMany({ where: { memberId } }).catch(() => { });
+
+            // 9. Delete PT Sessions, then PT Member Account
+            await tx.pTSession.deleteMany({ where: { memberId } }).catch(() => { });
+            await tx.pTMemberAccount.deleteMany({ where: { memberId } }).catch(() => { });
+
+            // 10. Finally delete the Member
+            await tx.member.delete({ where: { id: memberId } });
+        });
+
         res.json({ message: 'Member deleted successfully' });
     } catch (error) {
+        console.error('Delete member error:', error);
         res.status(500).json({ message: error.message });
     }
 };
+
 
 const toggleMemberStatus = async (req, res) => {
     try {
@@ -429,9 +670,8 @@ const getAllStaff = async (req, res) => {
                     where: { OR: orConditions },
                     select: { id: true }
                 });
-                const managedBranchIds = branches.map(b => b.id);
-                where.tenantId = { in: managedBranchIds };
-                console.log(`[getAllStaff] Managed branches: ${managedBranchIds}`);
+                where.tenantId = { in: branches.map(b => b.id) };
+                console.log(`[getAllStaff] Managed branches: ${where.tenantId.in}`);
             }
         }
 
@@ -562,7 +802,7 @@ const createStaff = async (req, res) => {
             joiningDate, status, baseSalary, commission, accountNumber, ifsc,
             trainerConfig, salesConfig, managerConfig, documents,
             idType, idNumber, specialization, certifications, salaryType, hourlyRate, ptSharePercent, bio,
-            position, bankName, taxId
+            position, bankName, taxId, avatar, gender
         } = req.body;
 
         console.log(`[createStaff] Received payload:`, {
@@ -574,6 +814,19 @@ const createStaff = async (req, res) => {
         if (role === 'Trainer') config = trainerConfig;
         if (role === 'Sales') config = salesConfig;
         if (role === 'Manager') config = managerConfig;
+
+        let avatarUrl = avatar || null;
+        if (avatar && avatar.startsWith('data:image')) {
+            try {
+                const uploadResponse = await cloudinary.uploader.upload(avatar, {
+                    folder: 'gym/staff',
+                    resource_type: 'image'
+                });
+                avatarUrl = uploadResponse.secure_url;
+            } catch (uploadError) {
+                console.error('Cloudinary upload failure:', uploadError);
+            }
+        }
 
         // Hash default password for staff (e.g. 123456)
         const bcrypt = require('bcryptjs');
@@ -631,11 +884,18 @@ const createStaff = async (req, res) => {
                                 commission: commission ? parseFloat(commission) : 0,
                                 position,
                                 bankName,
-                                taxId
+                                taxId,
+                                gender: gender || 'Male'
                             }),
-                            documents: documents ? JSON.stringify(documents) : null
+                            documents: documents ? JSON.stringify(documents) : null,
+                            avatar: avatarUrl
                         }
                     });
+                    
+                    // Background Sync to MIPS
+                    setImmediate(() => syncUserToMips(user));
+
+                    return user;
                 } catch (e) {
                     console.error(`Failed to create staff for branch ${b.id}:`, e.message);
                     return null;
@@ -671,15 +931,37 @@ const createStaff = async (req, res) => {
                     commission: commission ? parseFloat(commission) : 0,
                     position,
                     bankName,
-                    taxId
+                    taxId,
+                    gender: gender || 'Male'
                 }),
                 documents: documents ? JSON.stringify(documents) : null,
+                avatar: avatarUrl
             }
         });
+
+        // Background Sync to MIPS
+        setImmediate(() => syncUserToMips(newStaff));
 
         res.status(201).json(newStaff);
     } catch (error) {
         console.error('Error creating staff:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const syncStaffToMips = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const user = await prisma.user.findUnique({
+            where: { id: parseInt(id) }
+        });
+
+        if (!user) return res.status(404).json({ message: 'User not found' });
+
+        const result = await syncUserToMips(user);
+        res.json({ message: 'Sync triggered', result });
+    } catch (error) {
+        console.error('[syncStaffToMips] Error:', error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -764,7 +1046,9 @@ const getBookings = async (req, res) => {
         const bookings = await prisma.booking.findMany({
             where,
             include: {
-                member: true,
+                member: {
+                    include: { trainer: true }
+                },
                 class: {
                     include: { trainer: true }
                 }
@@ -851,7 +1135,14 @@ const getBookingsByDateRange = async (req, res) => {
                 member: { tenantId },
                 date: { gte: new Date(start), lte: new Date(end) }
             },
-            include: { member: true, class: true }
+            include: { 
+                member: {
+                    include: { trainer: true }
+                }, 
+                class: {
+                    include: { trainer: true }
+                }
+            }
         });
         res.json(bookings);
     } catch (error) {
@@ -864,7 +1155,14 @@ const getBookingById = async (req, res) => {
         const { id } = req.params;
         const booking = await prisma.booking.findUnique({
             where: { id: parseInt(id) },
-            include: { member: true, class: true }
+            include: { 
+                member: {
+                    include: { trainer: true }
+                }, 
+                class: {
+                    include: { trainer: true }
+                }
+            }
         });
         res.json(booking);
     } catch (error) {
@@ -984,7 +1282,14 @@ const getTodaysBookings = async (req, res) => {
 
         const bookings = await prisma.booking.findMany({
             where,
-            include: { member: true, class: true }
+            include: { 
+                member: {
+                    include: { trainer: true }
+                }, 
+                class: {
+                    include: { trainer: true }
+                }
+            }
         });
         res.json(bookings);
     } catch (error) {
@@ -997,7 +1302,14 @@ const getBookingCalendar = async (req, res) => {
         const where = req.user.role === 'SUPER_ADMIN' ? {} : { member: { tenantId: req.user.tenantId } };
         const bookings = await prisma.booking.findMany({
             where,
-            include: { member: true, class: true }
+            include: { 
+                member: {
+                    include: { trainer: true }
+                }, 
+                class: {
+                    include: { trainer: true }
+                }
+            }
         });
         res.json(bookings);
     } catch (error) {
@@ -1099,8 +1411,8 @@ const getCheckIns = async (req, res) => {
         const formatted = attendance.map(a => {
             const name = a.member?.name || a.user?.name || 'N/A';
             const roleName = a.type === 'Member' ? 'Member' : (a.user?.role || a.type);
-            const checkInTime = a.checkIn ? new Date(a.checkIn).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : '-';
-            const checkOutTime = a.checkOut ? new Date(a.checkOut).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : '-';
+            const checkInTime = a.checkIn ? new Date(a.checkIn).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' }) : '-';
+            const checkOutTime = a.checkOut ? new Date(a.checkOut).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' }) : '-';
 
             return {
                 id: a.id,
@@ -1238,7 +1550,7 @@ const getTasks = async (req, res) => {
     try {
         const { id: userId, tenantId: userTenantId, role, email, name: userName } = req.user;
         const headerTenantId = req.headers['x-tenant-id'];
-        const { branchId: queryBranchId, status: queryStatus } = req.query;
+        const { branchId: queryBranchId, status: queryStatus, type } = req.query;
 
         const resolveBranchId = () => {
             if (queryBranchId && queryBranchId !== 'undefined' && queryBranchId !== 'null' && queryBranchId !== 'all') return queryBranchId;
@@ -1248,27 +1560,24 @@ const getTasks = async (req, res) => {
         const branchId = resolveBranchId();
 
         let where = {};
+        
+        // Base hierarchy filtering
         if (role === 'SUPER_ADMIN') {
             if (branchId) where.tenantId = parseInt(branchId);
-        } else if (role === 'BRANCH_ADMIN' || role === 'MANAGER') {
-            if (branchId && branchId !== 'all') {
-                where.tenantId = parseInt(branchId);
-            } else {
-                let orConditions = [];
-                if (userTenantId) orConditions.push({ id: userTenantId });
-                if (email) orConditions.push({ owner: email });
-                if (userName) orConditions.push({ owner: userName });
-
-                // Fetch tasks for all managed branches
-                const branches = await prisma.tenant.findMany({
-                    where: {
-                        OR: orConditions.length > 0 ? orConditions : undefined
-                    },
-                    select: { id: true }
-                });
-                const managedIds = branches.map(b => b.id);
-                where.tenantId = { in: managedIds };
-            }
+        } else if (role === 'BRANCH_ADMIN') {
+            where.tenantId = userTenantId;
+        } else if (role === 'MANAGER') {
+            // Managers see tasks created for their branch OR tasks assigned SPECIFICALLY to them
+            where.OR = [
+                { tenantId: userTenantId },
+                { managerId: userId }
+            ];
+        } else if (role === 'STAFF' || role === 'TRAINER') {
+            // Staff see tasks delegated specifically to them
+            where.OR = [
+                { staffId: userId },
+                { assignedToId: userId }
+            ];
         } else {
             where.tenantId = userTenantId;
         }
@@ -1277,11 +1586,19 @@ const getTasks = async (req, res) => {
             where.status = queryStatus;
         }
 
+        // Additional type-based filtering if requested (e.g., "My Tasks" vs "Branch Tasks")
+        if (type === 'my-tasks') {
+            if (role === 'MANAGER') where = { managerId: userId };
+            if (role === 'STAFF' || role === 'TRAINER') where = { OR: [{ staffId: userId }, { assignedToId: userId }] };
+        }
+
         const tasks = await prisma.task.findMany({
             where,
             include: {
                 assignedTo: { select: { id: true, name: true } },
-                creator: { select: { id: true, name: true } }
+                creator: { select: { id: true, name: true } },
+                manager: { select: { id: true, name: true } },
+                staff: { select: { id: true, name: true } }
             },
             orderBy: { dueDate: 'asc' }
         });
@@ -1289,13 +1606,17 @@ const getTasks = async (req, res) => {
         const formatted = tasks.map(t => ({
             id: t.id,
             title: t.title,
-            assignedTo: t.assignedTo?.name || 'Unassigned',
-            assignedToId: t.assignedToId,
+            assignedTo: t.staff?.name || t.assignedTo?.name || t.manager?.name || 'Unassigned',
+            assignedToId: t.staffId || t.assignedToId || t.managerId,
             priority: t.priority,
             dueDate: t.dueDate?.toISOString().split('T')[0] || 'N/A',
+            staffDeadline: t.staffDeadline?.toISOString().split('T')[0],
             status: t.status,
             creator: t.creator?.name || 'Admin',
+            manager: t.manager?.name,
+            staff: t.staff?.name,
             description: t.description || '',
+            delegationNote: t.delegationNote || '',
             tenantId: t.tenantId
         }));
 
@@ -1319,6 +1640,7 @@ const getTaskStats = async (req, res) => {
         };
         const branchId = resolveBranchId();
 
+        
         let where = {};
         if (role === 'SUPER_ADMIN') {
             if (branchId) where.tenantId = parseInt(branchId);
@@ -1344,19 +1666,22 @@ const getTaskStats = async (req, res) => {
             where.tenantId = userTenantId;
         }
 
-        const total = await prisma.task.count({ where });
-        const pending = await prisma.task.count({ where: { ...where, status: 'Pending' } });
-        const inProgress = await prisma.task.count({ where: { ...where, status: 'In Progress' } });
-        const completed = await prisma.task.count({ where: { ...where, status: 'Completed' } });
-        const overdue = await prisma.task.count({
-            where: {
-                ...where,
-                status: { not: 'Completed' },
-                dueDate: { lt: new Date() }
-            }
-        });
+        const [total, pending, inProgress, completed, approved, overdue] = await Promise.all([
+            prisma.task.count({ where }),
+            prisma.task.count({ where: { ...where, status: 'Pending' } }),
+            prisma.task.count({ where: { ...where, status: 'In Progress' } }),
+            prisma.task.count({ where: { ...where, status: 'Completed' } }),
+            prisma.task.count({ where: { ...where, status: 'Approved' } }),
+            prisma.task.count({
+                where: {
+                    ...where,
+                    status: { notIn: ['Completed', 'Approved'] },
+                    dueDate: { lt: new Date() }
+                }
+            })
+        ]);
 
-        res.json({ total, pending, inProgress, completed, overdue });
+        res.json({ total, pending, inProgress, completed, approved, overdue });
     } catch (error) {
         console.error('Error fetching task stats:', error);
         res.status(500).json({ message: error.message });
@@ -1369,8 +1694,28 @@ const updateTaskStatus = async (req, res) => {
         const { status } = req.body;
         const updated = await prisma.task.update({
             where: { id: parseInt(id) },
-            data: { status }
+            data: { status },
+            include: { creator: true, manager: true, staff: true }
         });
+
+        // Notification: Notify Creator/Manager when status changes (especially Completed)
+        if (status === 'Completed' || status === 'Approved') {
+            const notifyIds = [updated.creatorId, updated.managerId].filter(uid => uid && uid !== updated.staffId);
+            for (const uid of [...new Set(notifyIds)]) {
+                try {
+                    await prisma.notification.create({
+                        data: {
+                            userId: uid,
+                            title: `Task ${status}`,
+                            message: `Task "${updated.title}" is now ${status}.`,
+                            type: 'success',
+                            link: '/dashboard'
+                        }
+                    });
+                } catch (err) { console.error('Notify Error:', err); }
+            }
+        }
+
         res.json(updated);
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -1397,7 +1742,7 @@ const updateTask = async (req, res) => {
 
 const createTask = async (req, res) => {
     try {
-        const { title, description, assignedToId, priority, dueDate, status, tenantId: bodyTenantId } = req.body;
+        const { title, description, managerId, assignedToId, priority, dueDate, status, tenantId: bodyTenantId } = req.body;
         const { id: creatorId, tenantId: userTenantId, role, email, name: userName } = req.user;
 
         let tenantIdToUse = userTenantId;
@@ -1405,7 +1750,6 @@ const createTask = async (req, res) => {
         if (role === 'SUPER_ADMIN') {
             tenantIdToUse = bodyTenantId ? parseInt(bodyTenantId) : null;
         } else if ((role === 'BRANCH_ADMIN' || role === 'MANAGER') && bodyTenantId) {
-            // Validate that the user actually owns/manages this branch
             const targetBranch = await prisma.tenant.findFirst({
                 where: {
                     id: parseInt(bodyTenantId),
@@ -1429,17 +1773,84 @@ const createTask = async (req, res) => {
                 description,
                 priority: priority || 'Medium',
                 dueDate: new Date(dueDate),
+                managerId: managerId ? parseInt(managerId) : null,
                 assignedToId: assignedToId ? parseInt(assignedToId) : null,
                 creatorId,
                 tenantId: tenantIdToUse,
                 status: status || 'Pending'
             },
-            include: { assignedTo: true }
+            include: { 
+                assignedTo: { select: { id: true, name: true } },
+                manager: { select: { id: true, name: true } }
+            }
         });
 
         res.status(201).json(newTask);
+
+        // Notification: Notify Manager or Staff
+        const targetUserId = newTask.managerId || newTask.assignedToId;
+        if (targetUserId && targetUserId !== creatorId) {
+            try {
+                await prisma.notification.create({
+                    data: {
+                        userId: targetUserId,
+                        title: 'New Task Assigned',
+                        message: `New task: ${newTask.title}. Priority: ${newTask.priority}`,
+                        type: 'info',
+                        link: newTask.managerId ? '/dashboard' : '/manager/tasks'
+                    }
+                });
+            } catch (err) { console.error('Notify Error:', err); }
+        }
     } catch (error) {
         console.error("Task Creation Error:", error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const delegateTask = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { staffId, delegationNote, staffDeadline } = req.body;
+        const { id: userId, role } = req.user;
+
+        const task = await prisma.task.findUnique({ where: { id: parseInt(id) } });
+        if (!task) return res.status(404).json({ message: 'Task not found' });
+
+        // Only Manager assigned to the task or Branch Admin can delegate
+        if (role !== 'BRANCH_ADMIN' && role !== 'SUPER_ADMIN' && task.managerId !== userId) {
+            return res.status(403).json({ message: 'Not authorized to delegate this task' });
+        }
+
+        const updated = await prisma.task.update({
+            where: { id: parseInt(id) },
+            data: {
+                staffId: parseInt(staffId),
+                delegationNote,
+                staffDeadline: staffDeadline ? new Date(staffDeadline) : null,
+                status: 'Pending' // Reset to pending for staff
+            },
+            include: { staff: { select: { id: true, name: true } } }
+        });
+
+        res.json(updated);
+
+        // Notification: Notify Staff
+        if (updated.staffId && updated.staffId !== userId) {
+            try {
+                await prisma.notification.create({
+                    data: {
+                        userId: updated.staffId,
+                        title: 'New Delegated Task',
+                        message: `Delegated: ${updated.title}. Due: ${updated.staffDeadline ? updated.staffDeadline.toLocaleDateString() : 'N/A'}`,
+                        type: 'warning',
+                        link: '/dashboard'
+                    }
+                });
+            } catch (err) { console.error('Notify Error:', err); }
+        }
+    } catch (error) {
+        console.error("Task Delegation Error:", error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -1514,7 +1925,14 @@ const getBookingReport = async (req, res) => {
         const where = role === 'SUPER_ADMIN' ? {} : { member: { tenantId } };
         const bookings = await prisma.booking.findMany({
             where,
-            include: { member: true, class: true }
+            include: { 
+                member: {
+                    include: { trainer: true }
+                }, 
+                class: {
+                    include: { trainer: true }
+                }
+            }
         });
         res.json(bookings);
     } catch (error) {
@@ -1578,6 +1996,17 @@ const freezeMember = async (req, res) => {
             }
         });
 
+        // --- MIPS SYNC (non-blocking) ---
+        setImmediate(async () => {
+            try {
+                const personObj = buildMemberObj(updated);
+                const { personId } = await upsertPersonInMips(personObj, updated.tenantId);
+                await syncPersonToDevices(personId, updated.tenantId);
+            } catch (err) {
+                console.warn(`[MIPS] Freeze Sync failed for member ${updated.id}:`, err.message);
+            }
+        });
+
         res.json(updated);
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -1591,6 +2020,18 @@ const unfreezeMember = async (req, res) => {
             where: { id: parseInt(id) },
             data: { status: 'Active' }
         });
+
+        // --- MIPS SYNC (non-blocking) ---
+        setImmediate(async () => {
+            try {
+                const personObj = buildMemberObj(updated);
+                const { personId } = await upsertPersonInMips(personObj, updated.tenantId);
+                await syncPersonToDevices(personId, updated.tenantId);
+            } catch (err) {
+                console.warn(`[MIPS] Unfreeze Sync failed for member ${updated.id}:`, err.message);
+            }
+        });
+
         res.json(updated);
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -1614,6 +2055,17 @@ const giftDays = async (req, res) => {
             data: {
                 expiryDate: newExpiry,
                 medicalHistory: member.medicalHistory ? `${member.medicalHistory}\n[Gift: ${days} days - ${note}]` : `[Gift: ${days} days - ${note}]`
+            }
+        });
+
+        // --- MIPS SYNC (non-blocking) ---
+        setImmediate(async () => {
+            try {
+                const personObj = buildMemberObj(updated);
+                const { personId } = await upsertPersonInMips(personObj, updated.tenantId);
+                await syncPersonToDevices(personId, updated.tenantId);
+            } catch (err) {
+                console.warn(`[MIPS] Gift Sync failed for member ${updated.id}:`, err.message);
             }
         });
 
@@ -1693,6 +2145,10 @@ const getAllPlans = async (req, res) => {
                 maxBookingsPerWeek: p.maxBookingsPerWeek,
                 memberCount: p._count?.members || 0,
                 branch: p.tenant?.name || '—',
+                allowTransfer: p.allowTransfer,
+                showInPurchase: p.showInPurchase,
+                showOnDashboard: p.showOnDashboard,
+                includeLocker: p.includeLocker,
                 createdAt: p.createdAt
             };
         });
@@ -1749,12 +2205,16 @@ const createPlan = async (req, res) => {
                     price: parseFloat(planData.price) || 0,
                     duration: parseInt(planData.duration) || 30,
                     durationType: planData.durationType || 'Days',
-                    status: planData.active ? 'Active' : 'Active',
+                    status: planData.status || 'Active',
                     benefits: benefitsStr,
                     cancellationWindow: planData.maxFreezeDays ? parseInt(planData.maxFreezeDays) : 0,
                     creditsPerBooking: planData.creditsPerBooking ? parseInt(planData.creditsPerBooking) : 1,
                     maxBookingsPerDay: planData.maxBookingsPerDay ? parseInt(planData.maxBookingsPerDay) : 1,
-                    maxBookingsPerWeek: planData.maxBookingsPerWeek ? parseInt(planData.maxBookingsPerWeek) : 7
+                    maxBookingsPerWeek: planData.maxBookingsPerWeek ? parseInt(planData.maxBookingsPerWeek) : 7,
+                    allowTransfer: planData.allowTransfer || false,
+                    showInPurchase: planData.showInPurchase !== undefined ? planData.showInPurchase : true,
+                    showOnDashboard: planData.showOnDashboard !== undefined ? planData.showOnDashboard : true,
+                    includeLocker: planData.includeLocker || false
                 }
             });
             createdPlans.push(newPlan);
@@ -1790,6 +2250,10 @@ const updatePlan = async (req, res) => {
         if (planData.creditsPerBooking !== undefined) updateData.creditsPerBooking = parseInt(planData.creditsPerBooking);
         if (planData.maxBookingsPerDay !== undefined) updateData.maxBookingsPerDay = parseInt(planData.maxBookingsPerDay);
         if (planData.maxBookingsPerWeek !== undefined) updateData.maxBookingsPerWeek = parseInt(planData.maxBookingsPerWeek);
+        if (planData.allowTransfer !== undefined) updateData.allowTransfer = planData.allowTransfer;
+        if (planData.showInPurchase !== undefined) updateData.showInPurchase = planData.showInPurchase;
+        if (planData.showOnDashboard !== undefined) updateData.showOnDashboard = planData.showOnDashboard;
+        if (planData.includeLocker !== undefined) updateData.includeLocker = planData.includeLocker;
 
         const updated = await prisma.membershipPlan.update({
             where: { id: parseInt(id) },
@@ -1830,9 +2294,12 @@ const deletePlan = async (req, res) => {
 
 const getAllClasses = async (req, res) => {
     try {
-        const { branchId } = req.query;
+        const { branchId, type } = req.query;
         const { tenantId: userTenantId, role, email, name: userName } = req.user;
         let where = {};
+        if (type) {
+            where.type = type;
+        }
 
         if (role === 'SUPER_ADMIN') {
             if (branchId && branchId !== 'all') {
@@ -1921,7 +2388,7 @@ const getAllClasses = async (req, res) => {
 const createClass = async (req, res) => {
     try {
         const { tenantId, role } = req.user;
-        const { branchId, name, description, trainerId, schedule, date, time, type, maxCapacity, status, duration } = req.body;
+        const { branchId, name, description, trainerId, schedule, date, time, type, maxCapacity, status, duration, price } = req.body;
 
         let finalSchedule = schedule || {};
         if (date && time) {
@@ -1955,7 +2422,9 @@ const createClass = async (req, res) => {
                     maxCapacity: parseInt(maxCapacity),
                     status: status || 'Scheduled',
                     duration: duration ? String(duration) : '60',
-                    requiredBenefit: finalType
+                    requiredBenefit: finalType,
+                    type: type === 'Recovery' ? 'Recovery' : 'Workout',
+                    price: price ? parseFloat(price) : null
                 }));
                 await prisma.class.createMany({ data: classesToCreate });
                 return res.status(201).json({ message: 'Classes created for all branches', data: classesToCreate });
@@ -1975,7 +2444,9 @@ const createClass = async (req, res) => {
                 maxCapacity: parseInt(maxCapacity),
                 status: status || 'Scheduled',
                 duration: duration ? String(duration) : '60',
-                requiredBenefit: finalType
+                requiredBenefit: finalType,
+                type: type === 'Recovery' ? 'Recovery' : 'Workout',
+                price: price ? parseFloat(price) : null
             }
         });
         res.status(201).json(newClass);
@@ -1987,7 +2458,7 @@ const createClass = async (req, res) => {
 const updateClass = async (req, res) => {
     try {
         const { id } = req.params;
-        const { name, description, trainerId, schedule, date, time, type, maxCapacity, status, duration, requiredBenefit } = req.body;
+        const { name, description, trainerId, schedule, date, time, type, maxCapacity, status, duration, requiredBenefit, price } = req.body;
 
         let finalSchedule = schedule || undefined;
         if (date && time) {
@@ -2005,7 +2476,9 @@ const updateClass = async (req, res) => {
                 maxCapacity: maxCapacity ? parseInt(maxCapacity) : undefined,
                 status,
                 duration: duration ? String(duration) : undefined,
-                requiredBenefit: type || requiredBenefit
+                requiredBenefit: type || requiredBenefit,
+                type: type === 'Recovery' ? 'Recovery' : (type === 'Workout' ? 'Workout' : undefined),
+                price: price !== undefined ? parseFloat(price) : undefined
             }
         });
         res.json(updated);
@@ -2110,6 +2583,37 @@ const deleteClass = async (req, res) => {
         res.json({ message: 'Class and associated bookings deleted successfully' });
     } catch (error) {
         console.error('DeleteClass Error:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const saveClassAttendance = async (req, res) => {
+    try {
+        const { id } = req.params; // Class ID
+        const { attendanceData } = req.body; // Array of { memberId, status }
+
+        if (!Array.isArray(attendanceData)) {
+            return res.status(400).json({ message: 'Attendance data must be an array' });
+        }
+
+        // Use transaction to update all booking statuses
+        await prisma.$transaction(
+            attendanceData.map(item =>
+                prisma.booking.updateMany({
+                    where: {
+                        classId: parseInt(id),
+                        memberId: parseInt(item.memberId)
+                    },
+                    data: {
+                        status: item.status // "Present", "Absent", "Late", etc.
+                    }
+                })
+            )
+        );
+
+        res.json({ success: true, message: 'Class attendance saved successfully' });
+    } catch (error) {
+        console.error('saveClassAttendance Error:', error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -2487,7 +2991,11 @@ const getTenantSettings = async (req, res) => {
 
         const tenant = await prisma.tenant.findUnique({
             where: { id: tenantId },
-            select: { name: true }
+            select: { 
+                name: true,
+                phone: true,
+                location: true
+            }
         });
 
         if (!settings) {
@@ -2496,7 +3004,12 @@ const getTenantSettings = async (req, res) => {
             });
         }
 
-        res.json({ ...settings, name: tenant?.name || '' });
+        res.json({ 
+            ...settings, 
+            name: tenant?.name || '',
+            phone: tenant?.phone || '',
+            location: tenant?.location || ''
+        });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -2505,7 +3018,7 @@ const getTenantSettings = async (req, res) => {
 const updateTenantSettings = async (req, res) => {
     try {
         const { tenantId } = req.user;
-        const { name, ...settingsData } = req.body;
+        const { name, phone, location, email, ...settingsData } = req.body;
 
         let logoUrl = undefined;
 
@@ -2519,14 +3032,21 @@ const updateTenantSettings = async (req, res) => {
             delete settingsData.logo; // Remove base64 from settings data before database update
         }
 
-        if (name) {
+        if (name || phone || location) {
             await prisma.tenant.update({
                 where: { id: tenantId },
-                data: { name }
+                data: { 
+                    ...(name && { name }),
+                    ...(phone && { phone }),
+                    ...(location && { location })
+                }
             });
         }
 
         const updateData = { ...settingsData };
+        if (email) {
+            updateData.email = email;
+        }
         if (logoUrl) {
             updateData.logo = logoUrl;
         }
@@ -2614,9 +3134,22 @@ const renewMembership = async (req, res) => {
 
         if (!plan) return res.status(404).json({ message: 'Plan not found' });
 
+        const cycleMultiplier = parseInt(duration) || 1;
+        const totalDurationParam = plan.duration * cycleMultiplier;
         const today = new Date();
         const expiryDate = new Date(today);
-        expiryDate.setMonth(expiryDate.getMonth() + parseInt(duration));
+
+        if (plan.durationType === 'Days') {
+            expiryDate.setDate(expiryDate.getDate() + totalDurationParam);
+        } else if (plan.durationType === 'Weeks') {
+            expiryDate.setDate(expiryDate.getDate() + (totalDurationParam * 7));
+        } else if (plan.durationType === 'Years') {
+            expiryDate.setFullYear(expiryDate.getFullYear() + totalDurationParam);
+        } else {
+            expiryDate.setMonth(expiryDate.getMonth() + totalDurationParam);
+        }
+
+        const finalPrice = parseFloat(plan.price) * cycleMultiplier;
 
         const updatedMember = await prisma.member.update({
             where: { id: parseInt(memberId) },
@@ -2628,12 +3161,23 @@ const renewMembership = async (req, res) => {
             }
         });
 
+        // --- MIPS SYNC (non-blocking) ---
+        setImmediate(async () => {
+            try {
+                const personObj = buildMemberObj(updatedMember);
+                const { personId } = await upsertPersonInMips(personObj, tenantId);
+                await syncPersonToDevices(personId, tenantId);
+            } catch (err) {
+                console.warn(`[MIPS] Renewal Sync failed for member ${updatedMember.id}:`, err.message);
+            }
+        });
+
         await prisma.invoice.create({
             data: {
                 tenantId,
                 invoiceNumber: `REN-${Date.now()}`,
                 memberId: parseInt(memberId),
-                amount: parseFloat(plan.price) * parseInt(duration),
+                amount: finalPrice,
                 paymentMode: 'Cash',
                 status: 'Unpaid',
                 dueDate: new Date()
@@ -2660,6 +3204,19 @@ const renewMembership = async (req, res) => {
                 }))
             });
         }
+
+        // Log the renewal
+        await prisma.auditLog.create({
+            data: {
+                userId: req.user.id,
+                action: 'Membership Renewal',
+                module: 'Membership',
+                affectedEntity: `Member ID: ${memberId}`,
+                details: `Plan ${plan.name} renewed for ${updatedMember.name}. Amount: ₹${finalPrice}`,
+                ip: req.ip || '0.0.0.0',
+                status: 'Success'
+            }
+        });
 
         res.json({ message: 'Membership renewed successfully', member: updatedMember });
     } catch (error) {
@@ -2825,7 +3382,13 @@ const getTrainerStats = async (req, res) => {
 
 const getNotificationSettings = async (req, res) => {
     try {
-        const { tenantId } = req.user;
+        const headerTenantId = req.headers['x-tenant-id'];
+        const tenantId = (req.user.role === 'SUPER_ADMIN' && headerTenantId)
+            ? parseInt(headerTenantId)
+            : req.user.tenantId;
+
+        if (!tenantId) return res.status(400).json({ message: 'Tenant ID is required' });
+
         let settings = await prisma.tenantSettings.findUnique({
             where: { tenantId }
         });
@@ -2844,7 +3407,13 @@ const getNotificationSettings = async (req, res) => {
 
 const updateNotificationSettings = async (req, res) => {
     try {
-        const { tenantId } = req.user;
+        const headerTenantId = req.headers['x-tenant-id'];
+        const tenantId = (req.user.role === 'SUPER_ADMIN' && headerTenantId)
+            ? parseInt(headerTenantId)
+            : req.user.tenantId;
+
+        if (!tenantId) return res.status(400).json({ message: 'Tenant ID is required' });
+
         const updateData = req.body;
 
         const settings = await prisma.tenantSettings.upsert({
@@ -2897,7 +3466,13 @@ const updateSecuritySettings = async (req, res) => {
 
 const runReminders = async (req, res) => {
     try {
-        const { tenantId } = req.user;
+        const headerTenantId = req.headers['x-tenant-id'];
+        const tenantId = (req.user.role === 'SUPER_ADMIN' && headerTenantId)
+            ? parseInt(headerTenantId)
+            : req.user.tenantId;
+
+        if (!tenantId) return res.status(400).json({ message: 'Tenant ID is required' });
+
         const { type } = req.body;
 
         // Exact logic: Simulation of background job
@@ -2992,6 +3567,14 @@ const updateServiceRequestStatus = async (req, res) => {
         const { id } = req.params;
         const { status } = req.body;
 
+        const requestRecord = await prisma.serviceRequest.findUnique({
+            where: { id: parseInt(id) }
+        });
+
+        if (!requestRecord) {
+            return res.status(404).json({ message: 'Service request not found' });
+        }
+
         const updated = await prisma.serviceRequest.update({
             where: { id: parseInt(id) },
             data: {
@@ -3000,15 +3583,100 @@ const updateServiceRequestStatus = async (req, res) => {
             }
         });
 
+        // Automatically freeze or unfreeze if request is accepted/approved
+        if (status === 'Accepted' || status === 'Approved') {
+            if (requestRecord.type === 'Freeze Membership') {
+                const memberRecord = await prisma.member.findUnique({
+                    where: { id: requestRecord.memberId }
+                });
+
+                if (memberRecord) {
+                    // Determine freeze duration if specified in details or rawType, default to 1 month
+                    let freezeMonths = 1;
+                    const match = requestRecord.details?.match(/(\d+)\s*month/i);
+                    if (match && match[1]) {
+                        freezeMonths = parseInt(match[1]);
+                    }
+
+                    const currentExpiry = memberRecord.expiryDate || new Date();
+                    const newExpiry = new Date(currentExpiry);
+                    newExpiry.setMonth(newExpiry.getMonth() + freezeMonths);
+
+                    await prisma.member.update({
+                        where: { id: requestRecord.memberId },
+                        data: {
+                            status: 'Frozen',
+                            expiryDate: newExpiry,
+                            medicalHistory: memberRecord.medicalHistory
+                                ? `${memberRecord.medicalHistory}\n[Auto Freeze: Approved Service Request - ${freezeMonths} month(s)]`
+                                : `[Auto Freeze: Approved Service Request - ${freezeMonths} month(s)]`
+                        }
+                    });
+                }
+            } else if (requestRecord.type === 'Unfreeze Membership') {
+                const memberRecord = await prisma.member.findUnique({
+                    where: { id: requestRecord.memberId }
+                });
+
+                if (memberRecord) {
+                    await prisma.member.update({
+                        where: { id: requestRecord.memberId },
+                        data: {
+                            status: 'Active',
+                            medicalHistory: memberRecord.medicalHistory
+                                ? `${memberRecord.medicalHistory}\n[Auto Unfreeze: Approved Service Request]`
+                                : `[Auto Unfreeze: Approved Service Request]`
+                        }
+                    });
+                }
+            }
+        }
+
         res.json(updated);
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
 };
 
+const getAttendanceQrPreview = async (req, res) => {
+    try {
+        const headerTenantId = req.headers['x-tenant-id'];
+        const tenantId = (req.user.role === 'SUPER_ADMIN' && headerTenantId)
+            ? parseInt(headerTenantId)
+            : req.user.tenantId;
+
+        if (!tenantId) {
+            return res.status(400).json({ message: 'Branch ID is required to generate QR code.' });
+        }
+
+        // Generate QR Code data using dynamic frontend origin
+        const frontendUrl = req.headers.origin || 'http://localhost:5173';
+        const qrData = `${frontendUrl}/scan?branchId=${tenantId}&token=GYM_${tenantId}_SECURE`;
+
+        const qrCodeDataUrl = await QRCode.toDataURL(qrData, {
+            errorCorrectionLevel: 'H',
+            margin: 1,
+            width: 400
+        });
+
+        res.json({ qrCodeDataUrl });
+    } catch (error) {
+        console.error('QR Preview Error:', error);
+        res.status(500).json({ message: 'Failed to generate QR preview' });
+    }
+};
+
 const downloadAttendanceQrCode = async (req, res) => {
     try {
-        const tenantId = req.user.tenantId;
+        const headerTenantId = req.headers['x-tenant-id'];
+        const tenantId = (req.user.role === 'SUPER_ADMIN' && headerTenantId)
+            ? parseInt(headerTenantId)
+            : req.user.tenantId;
+
+        if (!tenantId) {
+            return res.status(400).json({ message: 'Branch ID is required to download QR PDF.' });
+        }
+
         const tenant = await prisma.tenant.findUnique({
             where: { id: tenantId }
         });
@@ -3017,9 +3685,9 @@ const downloadAttendanceQrCode = async (req, res) => {
             return res.status(404).json({ message: 'Tenant not found' });
         }
 
-        // Generate QR Code data
-        // Format: https://mygymsoftware.com/scan?branchId=1&token=GYM_1_SECURE
-        const qrData = `https://mygymsoftware.com/scan?branchId=${tenantId}&token=GYM_${tenantId}_SECURE`;
+        // Generate QR Code data using dynamic frontend origin
+        const frontendUrl = req.headers.origin || 'http://localhost:5173';
+        const qrData = `${frontendUrl}/scan?branchId=${tenantId}&token=GYM_${tenantId}_SECURE`;
 
         const qrCodeBuffer = await QRCode.toBuffer(qrData, {
             errorCorrectionLevel: 'H',
@@ -3130,6 +3798,7 @@ module.exports = {
     updateTaskStatus,
     updateTask,
     createTask,
+    delegateTask,
     getTaskById,
     deleteTask,
     assignTask,
@@ -3156,5 +3825,11 @@ module.exports = {
     updateTenantSettings,
     getTrainerStats,
     getSystemHealth,
-    downloadAttendanceQrCode
+    downloadAttendanceQrCode,
+    getAttendanceQrPreview,
+    saveClassAttendance,
+    runReminders,
+    getNotificationSettings,
+    updateNotificationSettings,
+    syncStaffToMips
 };

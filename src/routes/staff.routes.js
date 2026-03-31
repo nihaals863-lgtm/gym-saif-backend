@@ -7,9 +7,11 @@ const {
     getMyAttendance,
     recordAttendance,
     getTasks,
+    getTaskById,
     createTask,
     getTaskStats,
     updateTaskStatus,
+    deleteTask,
     getBranchTeam,
     getMyBranch,
     getLockers,
@@ -51,7 +53,9 @@ router.post('/attendance/check-out', checkOut);
 router.get('/tasks', getTasks);
 router.post('/tasks', createTask);
 router.get('/tasks/stats', getTaskStats);
+router.get('/tasks/:id', getTaskById);
 router.patch('/tasks/:id/status', updateTaskStatus);
+router.delete('/tasks/:id', deleteTask);
 router.get('/team', getBranchTeam);
 router.get('/my-branch', getMyBranch);
 

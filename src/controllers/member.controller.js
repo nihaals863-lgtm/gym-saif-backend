@@ -17,7 +17,7 @@ const cancelMembership = async (req, res) => {
     try {
         // Find member associated with this user
         const member = await prisma.member.findUnique({ where: { userId: req.user.id } });
-        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+        if (!member) return res.json({ message: 'Member profile not found', status: 'No Profile' });
 
         await prisma.member.update({
             where: { id: member.id },
@@ -32,7 +32,7 @@ const cancelMembership = async (req, res) => {
 const getWalletTransactions = async (req, res) => {
     try {
         const member = await prisma.member.findUnique({ where: { userId: req.user.id } });
-        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+        if (!member) return res.json({ message: 'Member profile not found', status: 'No Profile' });
 
         const wallet = await prisma.wallet.findUnique({
             where: { memberId: member.id },
@@ -57,7 +57,7 @@ const addWalletCredit = async (req, res) => {
     try {
         const { amount } = req.body;
         const member = await prisma.member.findUnique({ where: { userId: req.user.id } });
-        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+        if (!member) return res.json({ message: 'Member profile not found', status: 'No Profile' });
 
         let wallet = await prisma.wallet.findUnique({ where: { memberId: member.id } });
         if (!wallet) {
@@ -90,13 +90,20 @@ const addWalletCredit = async (req, res) => {
 const getMyBookings = async (req, res) => {
     try {
         const member = await prisma.member.findUnique({ where: { userId: req.user.id } });
-        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+        if (!member) return res.json([]);
 
-        const bookings = await prisma.booking.findMany({
-            where: { memberId: member.id },
-            include: { class: { include: { trainer: true } } },
-            orderBy: { date: 'desc' }
-        });
+        const [bookings, ptSessions] = await Promise.all([
+            prisma.booking.findMany({
+                where: { memberId: member.id },
+                include: { class: { include: { trainer: true } } },
+                orderBy: { date: 'desc' }
+            }),
+            prisma.pTSession.findMany({
+                where: { memberId: member.id },
+                include: { trainer: true, ptAccount: { include: { package: true } } },
+                orderBy: { date: 'desc' }
+            })
+        ]);
 
         const processedBookings = bookings.map(b => {
             let startTime = null;
@@ -105,7 +112,6 @@ const getMyBookings = async (req, res) => {
                 try {
                     const sched = JSON.parse(b.class.schedule);
                     startTime = sched.time || null;
-                    // If range like "09:00 AM - 10:00 AM", split it
                     if (startTime && startTime.includes('-')) {
                         const parts = startTime.split('-');
                         startTime = parts[0].trim();
@@ -115,6 +121,7 @@ const getMyBookings = async (req, res) => {
             }
             return {
                 ...b,
+                type: 'Class',
                 class: {
                     ...b.class,
                     startTime: startTime || b.class.startTime,
@@ -123,7 +130,78 @@ const getMyBookings = async (req, res) => {
             };
         });
 
-        res.json(processedBookings);
+        const formattedPTSessions = ptSessions.map(pt => ({
+            id: `pt-${pt.id}`, // prefix to avoid key collisions on frontend if necessary
+            originalId: pt.id,
+            memberId: pt.memberId,
+            date: pt.date,
+            status: pt.status,
+            type: 'PT',
+            class: {
+                name: pt.ptAccount?.package?.name || 'Personal Training',
+                type: 'PT Session',
+                startTime: pt.time,
+                endTime: null, // Depending on duration, could be calculated
+                trainer: pt.trainer
+            }
+        }));
+
+        const combinedBookings = [...processedBookings, ...formattedPTSessions].sort((a, b) => new Date(b.date) - new Date(a.date));
+
+        res.json(combinedBookings);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const createPTBooking = async (req, res) => {
+    try {
+        const { ptAccountId, date, time, duration, notes } = req.body;
+        const member = await prisma.member.findUnique({
+            where: { userId: req.user.id }
+        });
+        if (!member) return res.json({ message: 'Member profile not found', status: 'No Profile' });
+        if (member.status !== 'Active') {
+            return res.status(400).json({ message: 'You can only book PT sessions with an Active membership status.' });
+        }
+
+        const ptAccount = await prisma.pTMemberAccount.findUnique({
+            where: { id: parseInt(ptAccountId) },
+            include: { package: true }
+        });
+
+        if (!ptAccount || ptAccount.memberId !== member.id) {
+            return res.status(403).json({ message: 'Unauthorized or invalid PT package' });
+        }
+
+        if (ptAccount.status !== 'Active') {
+            return res.status(400).json({ message: 'This PT package is not active yet. Please complete payment.' });
+        }
+
+        if (ptAccount.package?.sessionType === 'Fixed Sessions' && ptAccount.remainingSessions <= 0) {
+            return res.status(400).json({ message: 'No remaining sessions in this package.' });
+        }
+        
+        // Ensure a trainer is assigned
+        if (!member.trainerId) {
+            return res.status(400).json({ message: 'No trainer assigned to your profile.' });
+        }
+
+        const session = await prisma.pTSession.create({
+            data: {
+                tenantId: ptAccount.tenantId,
+                memberId: member.id,
+                trainerId: member.trainerId,
+                ptAccountId: ptAccount.id,
+                date: new Date(date),
+                time,
+                duration: parseInt(duration || 60),
+                notes: notes || 'Booked by member',
+                status: 'Scheduled'
+            }
+        });
+
+        res.status(201).json(session);
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -136,7 +214,10 @@ const createBooking = async (req, res) => {
             where: { userId: req.user.id },
             include: { plan: true }
         });
-        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+        if (!member) return res.json({ message: 'Member profile not found', status: 'No Profile' });
+        if (member.status !== 'Active') {
+            return res.status(400).json({ message: 'You can only book sessions with an Active membership status.' });
+        }
 
         const targetClass = await prisma.class.findUnique({
             where: { id: parseInt(classId) },
@@ -215,14 +296,46 @@ const createBooking = async (req, res) => {
             }
         }
 
-        const booking = await prisma.booking.create({
-            data: {
-                memberId: member.id,
-                classId: parseInt(classId),
-                date: new Date(date),
-                status: 'Upcoming'
+        const price = targetClass.price ? parseFloat(targetClass.price) : 0;
+        const status = price > 0 ? 'Pending Payment' : 'Upcoming';
+
+        const booking = await prisma.$transaction(async (tx) => {
+            const newBooking = await tx.booking.create({
+                data: {
+                    memberId: member.id,
+                    classId: parseInt(classId),
+                    date: new Date(date),
+                    status: status
+                }
+            });
+
+            let invoice = null;
+            if (price > 0) {
+                invoice = await tx.invoice.create({
+                    data: {
+                        tenantId: member.tenantId,
+                        memberId: member.id,
+                        bookingId: newBooking.id,
+                        invoiceNumber: `BK-${Date.now()}-${newBooking.id}`,
+                        amount: price,
+                        subtotal: price,
+                        status: 'Unpaid',
+                        dueDate: new Date(),
+                        items: {
+                            create: [{
+                                description: `Booking for ${targetClass.name} on ${new Date(date).toLocaleDateString()}`,
+                                quantity: 1,
+                                rate: price,
+                                amount: price
+                            }]
+                        }
+                    }
+                });
             }
+
+            return { ...newBooking, invoice };
         });
+
         res.json(booking);
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -284,18 +397,19 @@ const getInvoices = async (req, res) => {
     try {
         const memberRaw = await prisma.$queryRaw`SELECT * FROM member WHERE userId = ${req.user.id}`;
         const member = memberRaw[0];
-        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+        if (!member) return res.json([]);
 
         const invoices = await prisma.invoice.findMany({
             where: { tenantId: member.tenantId, memberId: member.id },
+            include: { items: true },
             orderBy: { dueDate: 'desc' }
         });
 
         if (invoices.length === 0) {
             // Seed a few dummy pending invoices for new users so the UI works immediately
             const dummyInvoices = [
-                { invoiceNumber: `INV-${Date.now()}-1`, amount: 2499.00, dueDate: new Date() },
-                { invoiceNumber: `INV-${Date.now()}-2`, amount: 500.00, dueDate: new Date(Date.now() + 86400000 * 30), status: "Unpaid" }
+                { invoiceNumber: `INV-${Date.now()}-1`, amount: 2499.00, dueDate: new Date(), description: 'Gold Plan - Monthly' },
+                { invoiceNumber: `INV-${Date.now()}-2`, amount: 500.00, dueDate: new Date(Date.now() + 86400000 * 30), status: "Unpaid", description: 'PT Session Fee' }
             ];
             for (const d of dummyInvoices) {
                 await prisma.invoice.create({
@@ -305,12 +419,21 @@ const getInvoices = async (req, res) => {
                         invoiceNumber: d.invoiceNumber,
                         amount: d.amount,
                         dueDate: d.dueDate,
-                        status: d.status || "Unpaid"
+                        status: d.status || "Unpaid",
+                        items: {
+                            create: [{
+                                description: d.description,
+                                quantity: 1,
+                                rate: d.amount,
+                                amount: d.amount
+                            }]
+                        }
                     }
                 });
             }
             const seeded = await prisma.invoice.findMany({
                 where: { tenantId: member.tenantId, memberId: member.id },
+                include: { items: true },
                 orderBy: { dueDate: 'desc' }
             });
             const mapped = seeded.map(inv => ({
@@ -319,6 +442,8 @@ const getInvoices = async (req, res) => {
                 date: inv.dueDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
                 amount: parseFloat(inv.amount),
                 status: inv.status,
+                bookingId: inv.bookingId,
+                serviceName: inv.items?.length > 0 ? inv.items.map(i => i.description).join(', ') : (inv.notes || 'Gym Membership'),
                 dueDate: inv.dueDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
             }));
             return res.json(mapped);
@@ -330,6 +455,8 @@ const getInvoices = async (req, res) => {
             date: inv.dueDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
             amount: parseFloat(inv.amount),
             status: inv.status,
+            bookingId: inv.bookingId,
+            serviceName: inv.items?.length > 0 ? inv.items.map(i => i.description).join(', ') : (inv.notes || 'Gym Membership'),
             dueDate: inv.dueDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
         }));
 
@@ -344,14 +471,47 @@ const payInvoice = async (req, res) => {
         const { id } = req.params; // this is the dbId passed by the frontend
         const memberRaw = await prisma.$queryRaw`SELECT * FROM member WHERE userId = ${req.user.id}`;
         const member = memberRaw[0];
-        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+        if (!member) return res.json({ message: 'Member profile not found', status: 'No Profile' });
 
-        await prisma.invoice.updateMany({
-            where: { id: parseInt(id), memberId: member.id, tenantId: member.tenantId },
-            data: { status: 'Paid', paidDate: new Date() }
+        await prisma.$transaction(async (tx) => {
+            const invoice = await tx.invoice.findFirst({
+                where: { id: parseInt(id), memberId: member.id, tenantId: member.tenantId }
+            });
+
+            if (!invoice) throw new Error('Invoice not found');
+
+            await tx.invoice.update({
+                where: { id: invoice.id },
+                data: { status: 'Paid', paidDate: new Date() }
+            });
+
+            if (invoice.bookingId) {
+                await tx.booking.update({
+                    where: { id: invoice.bookingId },
+                    data: { status: 'Upcoming' }
+                });
+            }
         });
 
         res.json({ message: 'Invoice paid successfully' });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const failPayment = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const memberRaw = await prisma.$queryRaw`SELECT * FROM member WHERE userId = ${req.user.id}`;
+        const member = memberRaw[0];
+        if (!member) return res.json({ message: 'Member profile not found', status: 'No Profile' });
+
+        await prisma.invoice.update({
+            where: { id: parseInt(id), memberId: member.id },
+            data: { status: 'Unpaid' }
+        });
+
+        res.json({ message: 'Transaction Failed', status: 'Unpaid' });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -363,7 +523,7 @@ const getWalletBalance = async (req, res) => {
             where: { userId: req.user.id },
             include: { Reward: true }
         });
-        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+        if (!member) return res.json({ message: 'Member profile not found', status: 'No Profile' });
 
         const wallet = await prisma.wallet.findUnique({
             where: { memberId: member.id },
@@ -394,7 +554,7 @@ const getSavedCards = async (req, res) => {
     try {
         const memberRaw = await prisma.$queryRaw`SELECT * FROM member WHERE userId = ${req.user.id}`;
         const member = memberRaw[0];
-        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+        if (!member) return res.json([]);
 
         let cards = [];
         if (member.cards) {
@@ -411,7 +571,7 @@ const addSavedCard = async (req, res) => {
     try {
         const memberRaw = await prisma.$queryRaw`SELECT * FROM member WHERE userId = ${req.user.id}`;
         const member = memberRaw[0];
-        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+        if (!member) return res.json({ message: 'Member profile not found', status: 'No Profile' });
 
         let existingCards = [];
         if (member.cards) {
@@ -435,7 +595,7 @@ const deleteSavedCard = async (req, res) => {
         const { id } = req.params;
         const memberRaw = await prisma.$queryRaw`SELECT * FROM member WHERE userId = ${req.user.id}`;
         const member = memberRaw[0];
-        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+        if (!member) return res.json({ message: 'Member profile not found', status: 'No Profile' });
 
         let existingCards = [];
         if (member.cards) {
@@ -465,7 +625,7 @@ const getMembershipDetails = async (req, res) => {
         });
 
         if (!member) {
-            return res.status(404).json({ message: 'Member profile not found' });
+            return res.json({ id: null, currentPlan: 'No Active Plan', status: 'No Profile', daysRemaining: 0 });
         }
 
         const daysRemaining = member.expiryDate ? Math.max(0, Math.floor((new Date(member.expiryDate) - new Date()) / (1000 * 60 * 60 * 24))) : 0;
@@ -488,6 +648,49 @@ const getMembershipDetails = async (req, res) => {
     }
 };
 
+const getPTAccounts = async (req, res) => {
+    try {
+        const member = await prisma.member.findUnique({
+            where: { userId: req.user.id }
+        });
+
+        if (!member) {
+            return res.json([]); // Return empty list instead of 404
+        }
+
+        const ptAccounts = await prisma.pTMemberAccount.findMany({
+            where: {
+                memberId: member.id,
+                status: { in: ['Active', 'Pending Payment'] }
+            },
+            include: {
+                package: true,
+                member: {
+                    select: {
+                        status: true,
+                        trainer: {
+                            select: {
+                                name: true
+                            }
+                        }
+                    }
+                }
+            },
+            orderBy: { createdAt: 'desc' }
+        });
+
+        // Format response to match expected UI structure
+        const formattedAccounts = ptAccounts.map(account => ({
+            ...account,
+            trainer: account.member?.trainer || null
+        }));
+
+        res.json(formattedAccounts);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
 const getServiceRequests = async (req, res) => {
     try {
         const member = await prisma.member.findUnique({
@@ -495,7 +698,7 @@ const getServiceRequests = async (req, res) => {
         });
 
         if (!member) {
-            return res.status(404).json({ message: 'Member not found' });
+            return res.json([]);
         }
 
         const requests = await prisma.serviceRequest.findMany({
@@ -573,7 +776,7 @@ const addServiceRequest = async (req, res) => {
         });
 
         if (!member) {
-            return res.status(404).json({ message: 'Member not found' });
+            return res.json({ success: false, message: 'Member profile not found' });
         }
 
         const { type, details, status, rawType } = req.body;
@@ -610,7 +813,7 @@ const getMemberProfile = async (req, res) => {
         });
 
         if (!member) {
-            return res.status(404).json({ message: 'Member profile not found' });
+            return res.json({ name: req.user.name, email: req.user.email, status: 'No Profile', benefitWallet: { classCredits: 0, saunaSessions: 0, iceBathCredits: 0 } });
         }
 
         let benefits = [];
@@ -691,7 +894,7 @@ const updateMemberProfile = async (req, res) => {
             where: { userId: req.user.id }
         });
 
-        if (!member) return res.status(404).json({ message: 'Member not found' });
+        if (!member) return res.json([]);
 
         let avatarUrl = avatar;
         if (avatar && avatar.startsWith('data:image')) {
@@ -776,7 +979,7 @@ const getWorkoutPlans = async (req, res) => {
         }
 
         if (!member) {
-            return res.status(404).json({ message: 'Member not found' });
+            return res.json([]);
         }
 
         // Authorization Check for Management
@@ -832,7 +1035,7 @@ const getDietPlans = async (req, res) => {
         }
 
         if (!member) {
-            return res.status(404).json({ message: 'Member not found' });
+            return res.json([]);
         }
 
         // Authorization Check for Management
@@ -875,8 +1078,17 @@ const getMemberAttendance = async (req, res) => {
         const member = await prisma.member.findUnique({
             where: { userId: req.user.id }
         });
-
-        if (!member) return res.status(404).json({ message: 'Member not found' });
+        if (!member) {
+            return res.json({
+                logs: [],
+                stats: {
+                    totalVisits: 0,
+                    visitsThisMonth: 0,
+                    avgDuration: '--',
+                    consistency: '0%'
+                }
+            });
+        }
 
         const attendance = await prisma.attendance.findMany({
             where: { memberId: member.id },
@@ -929,7 +1141,7 @@ const getRewardCatalog = async (req, res) => {
     try {
         const memberRaw = await prisma.$queryRaw`SELECT * FROM member WHERE userId = ${req.user.id}`;
         const member = memberRaw[0];
-        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+        if (!member) return res.json({ message: 'Member profile not found', status: 'No Profile' });
 
         const catalog = await prisma.rewardCatalog.findMany({
             where: { tenantId: member.tenantId, status: 'Active' },
@@ -1028,7 +1240,7 @@ const getMyReferrals = async (req, res) => {
         });
 
         if (!member) {
-            return res.status(404).json({ message: 'Member not found' });
+            return res.json({ referralCode: null, referrals: [], stats: { referralsSent: 0, successfulSignups: 0, rewardsEarned: 0, pendingRewards: 0 } });
         }
 
         const rawLeads = await prisma.lead.findMany({
@@ -1038,19 +1250,24 @@ const getMyReferrals = async (req, res) => {
 
         const myReferrals = [];
         let totalRewardsEarned = 0;
+        let pendingRewards = 0;
         let successfulSignups = 0;
 
         for (const lead of rawLeads) {
             if (lead.notes) {
-                // Only attempt to parse if it looks like a JSON object
                 if (lead.notes.trim().startsWith('{')) {
                     try {
                         const notesData = JSON.parse(lead.notes);
                         if (notesData.referrerId === member.memberId) {
                             const isConverted = lead.status === 'Converted';
                             if (isConverted) successfulSignups++;
-                            // Dummy reward calculation logic for now: 100 per conversion
-                            if (isConverted) totalRewardsEarned += 100;
+                            
+                            // 500 per confirmed conversion
+                            if (lead.rewardStatus === 'Claimed' || lead.rewardStatus === 'Paid') {
+                                totalRewardsEarned += 500;
+                            } else if (lead.rewardStatus === 'Eligible') {
+                                pendingRewards += 500;
+                            }
 
                             myReferrals.push({
                                 id: lead.id,
@@ -1058,7 +1275,8 @@ const getMyReferrals = async (req, res) => {
                                 phone: lead.phone,
                                 email: lead.email,
                                 status: isConverted ? 'Converted' : (lead.status === 'New' ? 'Pending' : lead.status),
-                                rewardStatus: isConverted ? 'Claimed' : 'Pending',
+                                rewardStatus: lead.rewardStatus || 'Pending',
+                                rewardAmount: 500,
                                 createdAt: lead.createdAt
                             });
                         }
@@ -1075,7 +1293,8 @@ const getMyReferrals = async (req, res) => {
             stats: {
                 referralsSent: myReferrals.length,
                 successfulSignups,
-                rewardsEarned: totalRewardsEarned
+                rewardsEarned: totalRewardsEarned,
+                pendingRewards
             }
         });
     } catch (error) {
@@ -1112,7 +1331,18 @@ const getMemberDashboard = async (req, res) => {
             }
         });
 
-        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+        if (!member) {
+            // Return a default empty dashboard instead of 404 to keep UI stable
+            return res.json({
+                memberInfo: { name: req.user.name, status: 'No Profile' },
+                membership: { planName: 'None', daysRemaining: 0 },
+                stats: { ptSessionsRemaining: 0, visitsThisMonth: 0, pendingDues: 0 },
+                recentAttendance: [],
+                upcomingClass: null,
+                announcements: [],
+                notifications: []
+            });
+        }
 
         // Calculate visits this month
         const now = new Date();
@@ -1175,11 +1405,18 @@ const getMemberDashboard = async (req, res) => {
                 date: member.bookings[0].date,
                 status: member.bookings[0].status
             } : null,
-            trainer: member.trainer ? {
-                userId: member.trainer.id,
-                name: member.trainer.name,
-                specialization: 'Personal Trainer'
-            } : {
+            trainer: member.trainer ? (() => {
+                let spec = 'Trainer';
+                try {
+                    const cfg = typeof member.trainer.config === 'string' ? JSON.parse(member.trainer.config) : member.trainer.config;
+                    spec = cfg?.specialization || 'Trainer';
+                } catch (e) { }
+                return {
+                    userId: member.trainer.id,
+                    name: member.trainer.name,
+                    specialization: spec
+                };
+            })() : {
                 userId: null,
                 name: 'Not Assigned',
                 specialization: 'Connect with staff'
@@ -1198,6 +1435,11 @@ const getMemberDashboard = async (req, res) => {
                 },
                 orderBy: { createdAt: 'desc' },
                 take: 3
+            }),
+            notifications: await prisma.notification.findMany({
+                where: { userId: member.userId },
+                orderBy: { createdAt: 'desc' },
+                take: 20
             })
         };
 
@@ -1213,7 +1455,7 @@ const memberCheckIn = async (req, res) => {
             where: { userId: req.user.id },
             include: { plan: true }
         });
-        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+        if (!member) return res.json({ message: 'Member profile not found', status: 'No Profile' });
 
         if (member.status === 'Expired') return res.status(403).json({ message: 'Membership expired. Please renew.' });
         if (member.status !== 'Active') return res.status(403).json({ message: `Membership is currently ${member.status}` });
@@ -1253,7 +1495,7 @@ const memberCheckIn = async (req, res) => {
 const memberCheckOut = async (req, res) => {
     try {
         const member = await prisma.member.findUnique({ where: { userId: req.user.id } });
-        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+        if (!member) return res.json({ message: 'Member profile not found', status: 'No Profile' });
 
         const activeRecord = await prisma.attendance.findFirst({
             where: { memberId: member.id, checkOut: null, type: 'Member' },
@@ -1276,7 +1518,7 @@ const memberCheckOut = async (req, res) => {
 const getMemberCheckInStatus = async (req, res) => {
     try {
         const member = await prisma.member.findUnique({ where: { userId: req.user.id } });
-        if (!member) return res.status(404).json({ message: 'Member profile not found' });
+        if (!member) return res.json({ message: 'Member profile not found', status: 'No Profile' });
 
         const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
         const todayEnd = new Date(); todayEnd.setHours(23, 59, 59, 999);
@@ -1298,6 +1540,45 @@ const getMemberCheckInStatus = async (req, res) => {
     }
 };
 
+const requestDietPlan = async (req, res) => {
+    try {
+        const member = await prisma.member.findUnique({
+            where: { userId: req.user.id }
+        });
+
+        if (!member) {
+            return res.json({ success: false, message: 'Member profile not found' });
+        }
+
+        // Check if there's already a pending diet plan request
+        const existingRequest = await prisma.serviceRequest.findFirst({
+            where: {
+                memberId: member.id,
+                type: 'Diet Plan Request',
+                status: 'Pending'
+            }
+        });
+
+        if (existingRequest) {
+            return res.status(400).json({ message: 'You already have a pending diet plan request.' });
+        }
+
+        const request = await prisma.serviceRequest.create({
+            data: {
+                tenantId: member.tenantId,
+                memberId: member.id,
+                type: 'Diet Plan Request',
+                details: 'Member requested a new personalized diet plan.',
+                status: 'Pending'
+            }
+        });
+
+        res.json({ success: true, message: 'Diet plan requested successfully', request });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
 module.exports = {
     upgradePlan,
     cancelMembership,
@@ -1311,6 +1592,7 @@ module.exports = {
     unfreezeMembership,
     getInvoices,
     payInvoice,
+    failPayment,
     getWalletBalance,
     getSavedCards,
     addSavedCard,
@@ -1331,5 +1613,8 @@ module.exports = {
     getMemberAttendance,
     memberCheckIn,
     memberCheckOut,
-    getMemberCheckInStatus
+    getMemberCheckInStatus,
+    getPTAccounts,
+    createPTBooking,
+    requestDietPlan
 };

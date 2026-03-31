@@ -182,11 +182,25 @@ const getAssignedMembers = async (req, res) => {
 
         const mapped = await Promise.all(members.map(async m => {
             // Fetch active workout plan name
-            const activePlan = await prisma.workoutPlan.findFirst({
+            const activeWorkout = await prisma.workoutPlan.findFirst({
                 where: { clientId: m.id, status: 'Active' },
                 select: { name: true },
                 orderBy: { createdAt: 'desc' }
             });
+
+            // Fetch active diet plan
+            const activeDiet = await prisma.dietPlan.findFirst({
+                where: { clientId: m.id, status: 'Active' },
+                select: { name: true },
+                orderBy: { createdAt: 'desc' }
+            });
+
+            // Combine for assignedProtocol display
+            let protocols = [];
+            if (activeWorkout) protocols.push(`Workout: ${activeWorkout.name}`);
+            if (activeDiet) protocols.push(`Diet: ${activeDiet.name}`);
+            
+            const assignedProtocol = protocols.length > 0 ? protocols.join(' | ') : 'None';
 
             // Check recent attendance or bookings for 'lastSession'
             const lastAttendance = m.attendances && m.attendances.length > 0 ? m.attendances[0] : null;
@@ -202,7 +216,7 @@ const getAssignedMembers = async (req, res) => {
                 memberId: m.memberId,
                 name: m.name,
                 plan: m.plan?.name || 'N/A',
-                assignedProtocol: activePlan ? activePlan.name : 'None',
+                assignedProtocol: assignedProtocol,
                 status: m.status,
                 attendance: lastAttendance ? `${new Date(lastAttendance.date).toLocaleDateString()}` : 'N/A',
                 lastSession: lastAttendance ? 'Recent' : (m.bookings?.length > 0 ? 'Upcoming' : 'None'),
@@ -351,25 +365,56 @@ const flagMember = async (req, res) => {
 
 const getSessions = async (req, res) => {
     try {
-        // Find classes and bookings taught by this trainer
+        const { id, tenantId } = req.user;
+
+        // Find group classes taught by this trainer
         const classes = await prisma.class.findMany({
-            where: { trainerId: req.user.id, tenantId: req.user.tenantId }
+            where: { trainerId: id, tenantId: tenantId }
         });
 
-        const mappedSessions = classes.map(c => ({
-            id: c.id,
+        // Find individual PT sessions for this trainer
+        const ptSessions = await prisma.pTSession.findMany({
+            where: { trainerId: id, tenantId: tenantId },
+            include: { member: { select: { name: true } } }
+        });
+
+        const mappedClasses = classes.map(c => ({
+            id: `class-${c.id}`,
+            internalId: c.id,
             title: c.name,
             time: c.schedule?.time || 'TBD',
             date: c.schedule?.date || new Date().toISOString().split('T')[0],
-            type: c.description || 'Group Class',
+            type: 'Group Class',
+            category: c.description || 'Group Class',
             location: c.location || 'Studio',
-            members: 0, // Need to count active bookings
+            members: 0, 
             maxMembers: c.maxCapacity,
             status: c.status
         }));
 
-        res.json(mappedSessions);
+        const mappedPTSessions = ptSessions.map(s => ({
+            id: `pt-${s.id}`,
+            internalId: s.id,
+            title: `PT: ${s.member?.name || 'Member'}`,
+            time: s.time || 'TBD',
+            date: s.date.toISOString().split('T')[0],
+            type: 'Personal Training',
+            category: 'Personal Training',
+            location: 'Gym Floor',
+            members: 1,
+            maxMembers: 1,
+            status: s.status
+        }));
+
+        const allSessions = [...mappedClasses, ...mappedPTSessions].sort((a, b) => {
+            const dateA = new Date(`${a.date} ${a.time === 'TBD' ? '00:00' : a.time}`);
+            const dateB = new Date(`${b.date} ${b.time === 'TBD' ? '00:00' : b.time}`);
+            return dateA - dateB;
+        });
+
+        res.json(allSessions);
     } catch (error) {
+        console.error('getSessions error:', error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -454,11 +499,31 @@ const updateTaskStatus = async (req, res) => {
 
 const saveAttendance = async (req, res) => {
     try {
-        const { id } = req.params; // Session ID
-        const attendanceData = req.body;
-        // Mock save for now since complex session attendance schemas are custom
-        res.json({ success: true, message: 'Attendance saved' });
+        const { id } = req.params; // Class/Session ID
+        const { attendanceData } = req.body; // Array of { memberId, status }
+
+        if (!Array.isArray(attendanceData)) {
+            return res.status(400).json({ message: 'Attendance data must be an array' });
+        }
+
+        // Use transaction to update all booking statuses for this class
+        await prisma.$transaction(
+            attendanceData.map(item =>
+                prisma.booking.updateMany({
+                    where: {
+                        classId: parseInt(id),
+                        memberId: parseInt(item.memberId)
+                    },
+                    data: {
+                        status: item.status // "Present", "Absent", "Late", etc.
+                    }
+                })
+            )
+        );
+
+        res.json({ success: true, message: 'Class attendance saved successfully' });
     } catch (error) {
+        console.error('Trainer saveAttendance Error:', error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -551,26 +616,48 @@ const getEarnings = async (req, res) => {
                 }
             });
 
+            // Fetch actual Commissions for this month/year
+            const commissions = await prisma.commission.findMany({
+                where: {
+                    trainerId: id,
+                    month: m + 1,
+                    year: year
+                }
+            });
+
+            const monthCommissionTotal = Math.round(commissions.reduce((acc, comm) => acc + parseFloat(comm.amount), 0));
+
             // If payroll exists, use those values, else calculate estimates
-            const finalBase = payroll ? parseFloat(payroll.amount) : salary;
-            const finalCommission = payroll ? 0 : commissionFixed; // Assuming commission is handled or not in payroll record for now
-            const pfDeduction = (finalBase + sessionEarnings + finalCommission) * 0.12; // 12% PF Mock
-            const total = (finalBase + sessionEarnings + finalCommission) - pfDeduction;
+            const finalBase = payroll ? parseFloat(payroll.baseSalary) : salary;
+            const finalCommission = payroll ? parseFloat(payroll.commission) : monthCommissionTotal;
+            const finalBonus = payroll ? parseFloat(payroll.extra_bonus || 0) : 0;
+            const finalDeduction = payroll ? parseFloat(payroll.leaveDeduction) : 0;
+            
+            const total = (finalBase + finalCommission + finalBonus) - finalDeduction;
 
             history.push({
-                id: `${year}-${m}`,
+                id: payroll ? payroll.id : `${year}-${m}`,
                 year: year.toString(),
                 month: `${monthName} ${year}`,
                 baseSalary: finalBase,
                 sessionCount,
                 sessionRate,
-                sessionEarnings,
+                sessionEarnings, // Note: sessions are currently added independently in this view, 
+                                // but instructions say Payroll should include monthly commission portion.
+                                // I'll keep sessionEarnings separate in UI if it's treated as extra, 
+                                // but usually sessions are also part of commission or base.
                 commission: finalCommission,
-                bonus: 0,
-                pfDeduction: Math.round(pfDeduction),
+                bonus: finalBonus,
+                leaveDeduction: finalDeduction,
+                pfDeduction: 0,
                 total: Math.round(total),
-                status: payroll ? 'Paid' : (isCurrentMonth ? 'Pending' : 'Processed'),
-                details: [] // Could fetch individual sessions if needed, but summary is usually enough for history item
+                status: payroll ? payroll.status : (isCurrentMonth ? 'Pending' : 'Processed'),
+                rejectionReason: payroll?.rejectionReason || null,
+                details: commissions.map(c => ({
+                    description: c.description,
+                    amount: c.amount,
+                    status: c.status
+                }))
             });
         }
 
@@ -583,21 +670,54 @@ const getEarnings = async (req, res) => {
                 sessionCount: currentMonthData.sessionCount,
                 sessionEarnings: currentMonthData.sessionEarnings,
                 currentMonthCommission: currentMonthData.commission,
-                pfDeduction: currentMonthData.pfDeduction,
-                currentMonthTotal: currentMonthData.total,
-                currency: '₹',
-                currentMonthName: fullMonths[currentMonth],
-                trainerName: req.user.name,
-                trainerCode: `TRN-${id}`,
-                branchName: req.user.tenant?.name || 'Main Branch',
-                department: req.user.department || 'Training',
-                position: parsedConfig.position || 'Personal Trainer'
+                totalEarnings: currentMonthData.total,
+                status: currentMonthData.status
             },
-            history: history
+            history
         };
+
         res.json(earningsData);
     } catch (error) {
-        console.error("getEarnings error:", error);
+        console.error('getEarnings Error:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+const updatePayrollStatus = async (req, res) => {
+    try {
+        const { id } = req.params; // Payroll ID
+        const { status, rejectionReason } = req.body;
+        const trainerId = req.user.id;
+
+        if (!['Confirmed', 'Rejected'].includes(status)) {
+            return res.status(400).json({ message: 'Invalid status update for trainer' });
+        }
+
+        const payroll = await prisma.payroll.findUnique({
+            where: { id: parseInt(id) }
+        });
+
+        if (!payroll) return res.status(404).json({ message: 'Payroll record not found' });
+        if (payroll.staffId !== trainerId) {
+            return res.status(403).json({ message: 'Not authorized to update this payroll' });
+        }
+
+        // Only Approved payrolls can be confirmed or rejected by trainer
+        if (payroll.status !== 'Approved' && payroll.status !== 'Rejected') {
+            return res.status(400).json({ message: `Cannot update payroll with status: ${payroll.status}` });
+        }
+
+        const updatedPayroll = await prisma.payroll.update({
+            where: { id: parseInt(id) },
+            data: {
+                status,
+                rejectionReason: status === 'Rejected' ? rejectionReason : null
+            }
+        });
+
+        res.json({ message: `Payroll ${status} successfully`, payroll: updatedPayroll });
+    } catch (error) {
+        console.error('updatePayrollStatus Error:', error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -1230,6 +1350,39 @@ const getTrainerDashboardStats = async (req, res) => {
             }
         }
 
+        // Fetch Earnings/Commission data for current month
+        const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+        const { config, baseSalary } = req.user;
+        let parsedConfig = {};
+        try {
+            if (config) parsedConfig = typeof config === 'string' ? JSON.parse(config) : config;
+        } catch (e) { }
+
+        const salary = baseSalary ? parseFloat(baseSalary) : 0;
+        const sessionRate = parsedConfig.hourlyRate || 500;
+        const commissionFixed = parsedConfig.commission || 0;
+
+        // Fetch Distributed PT Commissions for current month
+        const ptCommissions = await prisma.commission.findMany({
+            where: {
+                trainerId: trainerId,
+                month: today.getMonth() + 1,
+                year: today.getFullYear(),
+                status: 'Pending'
+            }
+        });
+        const ptCommissionSum = ptCommissions.reduce((acc, comm) => acc + parseFloat(comm.amount), 0);
+        const monthlyCommission = Math.round(ptCommissionSum);
+
+        // Attendance stats for current month
+        const monthlyAttendanceLogs = await prisma.attendance.count({
+            where: {
+                userId: trainerId,
+                date: { gte: startOfMonth, lt: tomorrow },
+                status: 'Present'
+            }
+        });
+
         res.json({
             stats: {
                 activeGeneralClients,
@@ -1238,17 +1391,22 @@ const getTrainerDashboardStats = async (req, res) => {
                 completedToday,
                 pendingToday: todaySessionsCount - completedToday,
                 myClassesCount,
-                completionRate
+                completionRate,
+                monthlyCommission,
+                monthlyAttendance: monthlyAttendanceLogs,
+                salary: salary + monthlyCommission
             },
             todaySessions,
             myClients: recentMembers,
             upcomingClass
         });
+
     } catch (error) {
         console.error('Trainer Dashboard Stats Error:', error);
         res.status(500).json({ message: error.message });
     }
 };
+
 
 module.exports = {
     getProfile,
@@ -1267,6 +1425,7 @@ module.exports = {
     getSessionHistory,
     getMemberPayments,
     getEarnings,
+    updatePayrollStatus,
     getAttendance,
     checkInTrainer,
     requestLeave,

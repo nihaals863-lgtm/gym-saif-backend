@@ -3,18 +3,26 @@ const express = require('express');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
 const dotenv = require('dotenv');
+const compression = require('compression');
+const responseTime = require('response-time');
 
 dotenv.config();
 
 const app = express();
 
 // Middleware
-app.use((req, res, next) => {
-    console.log(`${req.method} ${req.url}`);
-    next();
-});
+app.use(compression());
+app.use(responseTime((req, res, time) => {
+    if (time > 1000) { // Log slow requests (over 1s)
+        console.warn(`[SLOW_API] ${req.method} ${req.url} took ${time.toFixed(2)}ms`);
+    } else {
+        console.log(`${req.method} ${req.url} took ${time.toFixed(2)}ms`);
+    }
+}));
 app.use(cors({
-    origin: ['http://localhost:5173', 'https://gym-management-001.netlify.app', 'https://gym-newss.kiaantechnology.com'],
+    origin: function (origin, callback) {
+        callback(null, true);
+    },
     credentials: true
 }));
 app.use(express.json({ limit: '50mb' }));
@@ -79,6 +87,21 @@ app.use('/api/v1/branches', branchesRoutes);
 
 const notificationRoutes = require('./routes/notification.routes');
 app.use('/api/v1/notifications', notificationRoutes);
+
+const attendanceRoutes = require('./routes/attendance.routes');
+app.use('/api/v1/attendance', attendanceRoutes);
+
+const payrollRoutes = require('./routes/payrollRoutes');
+app.use('/api/v1/payroll', payrollRoutes);
+
+const gymDeviceRoutes = require('./routes/gymDevice.routes');
+app.use('/api/v1/gym-device', gymDeviceRoutes);
+
+const deviceRoutes = require('./routes/device.routes');
+app.use('/api/v1/devices', deviceRoutes);
+
+const mipsSyncRoutes = require('./routes/mipsSync.routes');
+app.use('/api/v1/mips-sync', mipsSyncRoutes);
 
 // Base Route
 app.get('/', (req, res) => {

@@ -21,98 +21,120 @@ const getDashboardStats = async (req, res) => {
     try {
         const { role } = req.user;
         const whereClause = getWhereClause(req);
+        
+        const now = new Date();
+        const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+        const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+        const nextWeek = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
 
-        // 1. Total Members
-        const totalMembers = await prisma.member.count({
-            where: whereClause
-        });
-
-        // 2. Active Trainers
-        const activeTrainers = await prisma.user.count({
-            where: {
-                ...whereClause,
-                role: 'TRAINER',
-                status: 'Active'
-            }
-        });
-
-        // 3. Today's Check-ins
-        const startOfDay = new Date();
-        startOfDay.setHours(0, 0, 0, 0);
-
-        const todaysCheckIns = await prisma.attendance.count({
-            where: {
-                ...whereClause,
-                checkIn: { gte: startOfDay }
-            }
-        });
-
-        // 4. Monthly Revenue (Current Month)
-        const startOfMonth = new Date();
-        startOfMonth.setDate(1);
-        startOfMonth.setHours(0, 0, 0, 0);
-
-        const revenue = await prisma.invoice.aggregate({
-            where: {
-                ...whereClause,
-                status: 'Paid',
-                paidDate: { gte: startOfMonth }
-            },
-            _sum: { amount: true }
-        });
-
-        // 5. Equipment Data
-        const equipmentData = await prisma.equipment.findMany({
-            where: whereClause,
-            select: { id: true, name: true, status: true, category: true }
-        });
-
-        // 6. Security Risks
-        const defaulterCheckIns = await prisma.attendance.count({
-            where: {
-                ...whereClause,
-                user: {
-                    status: 'Inactive'
-                },
-                checkIn: { gte: startOfDay }
-            }
-        });
-
-        const nextWeek = new Date();
-        nextWeek.setDate(nextWeek.getDate() + 7);
-
-        const expiringSoonCount = await prisma.member.count({
-            where: {
-                ...whereClause,
-                status: 'Active',
-                expiryDate: {
-                    gte: startOfDay,
-                    lte: nextWeek
+        const [totalMembers, activeTrainers, todaysCheckIns, revenueInvoice, revenueStore, newLeads, todaysClassesCount, pendingApprovalsCount, equipmentData, defaulterCheckIns, expiringSoonCount, taskCounts, overdueTasks] = await Promise.all([
+            // 1. Total Members
+            prisma.member.count({ where: whereClause }),
+            // 2. Active Trainers
+            prisma.user.count({ where: { ...whereClause, role: 'TRAINER', status: 'Active' } }),
+            // 3. Today's Check-ins
+            prisma.attendance.count({ where: { ...whereClause, checkIn: { gte: startOfDay } } }),
+            // 4. Monthly Revenue (Invoices)
+            prisma.invoice.aggregate({ where: { ...whereClause, status: 'Paid', paidDate: { gte: startOfMonth } }, _sum: { amount: true } }),
+            // 4. Monthly Revenue (Store)
+            prisma.storeOrder.aggregate({ where: { ...whereClause, status: { in: ['Paid', 'Completed', 'Processing'] }, date: { gte: startOfMonth } }, _sum: { total: true } }),
+            // 5. New Leads (MTD)
+            prisma.lead.count({ where: { ...whereClause, createdAt: { gte: startOfMonth } } }),
+            // 6. Today's Classes
+            prisma.class.count({ where: { ...whereClause, bookings: { some: { date: { gte: startOfDay, lt: endOfDay } } } } }),
+            // 7. Pending Approvals
+            prisma.serviceRequest.count({ where: { ...whereClause, status: 'Pending' } }),
+            // 8. Equipment Data
+            prisma.equipment.findMany({ where: whereClause, select: { id: true, name: true, status: true, category: true } }),
+            // 9. Security Risks
+            prisma.attendance.count({ where: { ...whereClause, user: { status: 'Inactive' }, checkIn: { gte: startOfDay } } }),
+            // 10. Expiring Soon
+            prisma.member.count({ where: { ...whereClause, status: 'Active', expiryDate: { gte: startOfDay, lte: nextWeek } } }),
+            // 11. Task Counts
+            prisma.task.groupBy({
+                by: ['status'],
+                where: whereClause,
+                _count: { id: true }
+            }),
+            // 12. Overdue Tasks
+            prisma.task.count({
+                where: {
+                    ...whereClause,
+                    status: { notIn: ['Completed', 'Approved'] },
+                    dueDate: { lt: now }
                 }
-            }
-        });
+            })
+        ]);
+
+        const taskStats = {
+            total: taskCounts.reduce((acc, curr) => acc + curr._count.id, 0),
+            pending: taskCounts.find(t => t.status === 'Pending')?._count.id || 0,
+            inProgress: taskCounts.find(t => t.status === 'In Progress')?._count.id || 0,
+            completed: taskCounts.find(t => t.status === 'Completed')?._count.id || 0,
+            approved: taskCounts.find(t => t.status === 'Approved')?._count.id || 0,
+            overdue: overdueTasks
+        };
+
+        const totalMonthlyRevenue = (Number(revenueInvoice._sum.amount) || 0) + (Number(revenueStore._sum.total) || 0);
 
         // 7. Revenue Overview (Last 6 Months)
+        const sixMonthsAgo = new Date();
+        sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 5);
+        sixMonthsAgo.setDate(1);
+        sixMonthsAgo.setHours(0, 0, 0, 0);
+
+        const [monthRevInvoiceArr, monthRevStoreArr, weeklyAttendanceArr] = await Promise.all([
+            prisma.invoice.findMany({
+                where: {
+                    ...whereClause,
+                    status: 'Paid',
+                    paidDate: { gte: sixMonthsAgo }
+                },
+                select: { amount: true, paidDate: true }
+            }),
+            prisma.storeOrder.findMany({
+                where: {
+                    ...whereClause,
+                    status: { in: ['Paid', 'Completed', 'Processing'] },
+                    date: { gte: sixMonthsAgo }
+                },
+                select: { total: true, date: true }
+            }),
+            prisma.attendance.findMany({
+                where: {
+                    ...whereClause,
+                    checkIn: { gte: new Date(new Date().setDate(new Date().getDate() - 6)) }
+                },
+                select: { checkIn: true }
+            })
+        ]);
+
         const revenueOverview = [];
         const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
         for (let i = 5; i >= 0; i--) {
             const date = new Date();
             date.setMonth(date.getMonth() - i);
-            const mStart = new Date(date.getFullYear(), date.getMonth(), 1);
-            const mEnd = new Date(date.getFullYear(), date.getMonth() + 1, 0, 23, 59, 59);
+            const m = date.getMonth();
+            const y = date.getFullYear();
 
-            const mRevenue = await prisma.invoice.aggregate({
-                where: {
-                    ...whereClause,
-                    status: 'Paid',
-                    paidDate: { gte: mStart, lte: mEnd }
-                },
-                _sum: { amount: true }
-            });
+            const invoiceSum = monthRevInvoiceArr
+                .filter(inv => {
+                    const d = new Date(inv.paidDate);
+                    return d.getMonth() === m && d.getFullYear() === y;
+                })
+                .reduce((sum, inv) => sum + Number(inv.amount), 0);
+
+            const storeSum = monthRevStoreArr
+                .filter(order => {
+                    const d = new Date(order.date);
+                    return d.getMonth() === m && d.getFullYear() === y;
+                })
+                .reduce((sum, order) => sum + Number(order.total), 0);
 
             revenueOverview.push({
-                month: monthNames[date.getMonth()],
-                value: mRevenue._sum.amount || 0
+                month: monthNames[m],
+                value: invoiceSum + storeSum
             });
         }
 
@@ -122,18 +144,12 @@ const getDashboardStats = async (req, res) => {
         for (let i = 6; i >= 0; i--) {
             const date = new Date();
             date.setDate(date.getDate() - i);
-            const dStart = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0, 0);
-            const dEnd = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59, 999);
+            const dateStr = date.toDateString();
 
-            const dCount = await prisma.attendance.count({
-                where: {
-                    ...whereClause,
-                    checkIn: { gte: dStart, lte: dEnd }
-                }
-            });
+            const dCount = weeklyAttendanceArr.filter(a => new Date(a.checkIn).toDateString() === dateStr).length;
 
             weeklyAttendance.push({
-                day: dayNames[dStart.getDay()],
+                day: dayNames[date.getDay()],
                 count: dCount
             });
         }
@@ -169,13 +185,80 @@ const getDashboardStats = async (req, res) => {
             count: todayCheckInsRaw.filter(a => new Date(a.checkIn).getHours() === h).length
         })).filter(h => h.hour >= 5 && h.hour <= 22);
 
+        // Fetch Recent Feedback (Member Voice) — safe query with manual member enrichment
+        let recentFeedback = [];
+        try {
+            const feedbackTenantId = whereClause.tenantId;
+            const feedbackQuery = {};
+            if (feedbackTenantId) {
+                feedbackQuery.tenantId = feedbackTenantId;
+            }
+
+            const rawFeedbacks = await prisma.feedback.findMany({
+                where: feedbackQuery,
+                take: 3,
+                orderBy: { date: 'desc' }
+            });
+
+            // Enrich with member names
+            for (const f of rawFeedbacks) {
+                let memberName = 'Anonymous';
+                let memberAvatar = null;
+                if (f.memberId) {
+                    const member = await prisma.member.findUnique({
+                        where: { id: f.memberId },
+                        select: { name: true, avatar: true }
+                    }).catch(() => null);
+                    if (member) {
+                        memberName = member.name || 'Anonymous';
+                        memberAvatar = member.avatar;
+                    }
+                }
+                recentFeedback.push({
+                    id: f.id,
+                    memberName,
+                    rating: f.rating,
+                    comment: f.comment,
+                    date: f.date,
+                    avatar: memberAvatar
+                });
+            }
+        } catch (fbErr) {
+            console.warn('Feedback fetch skipped:', fbErr.message);
+        }
+
+        // Calculate Net Profit for Store (Sale Price - Cost Price)
+        const storeOrderItemsMTD = await prisma.storeOrderItem.findMany({
+            where: {
+                order: {
+                    ...whereClause,
+                    status: { in: ['Paid', 'Completed', 'Processing'] },
+                    date: { gte: startOfMonth }
+                }
+            },
+            include: {
+                product: {
+                    select: { costPrice: true }
+                }
+            }
+        });
+
+        const storeNetProfit = storeOrderItemsMTD.reduce((sum, item) => {
+            const salePrice = Number(item.priceAtBuy) || 0;
+            const costPrice = Number(item.product?.costPrice) || 0;
+            return sum + (item.quantity * (salePrice - costPrice));
+        }, 0);
+
         res.json({
             stats: [
                 { id: 1, title: 'Total Members', value: totalMembers, icon: 'Users', trend: 'Live', color: 'primary' },
-                { id: 2, title: 'Monthly Revenue', value: `₹${revenue._sum.amount || 0}`, icon: 'DollarSign', trend: 'This Month', color: 'success' },
-                { id: 3, title: 'Expiring Soon', value: expiringSoonCount, icon: 'CheckCircle', trend: 'Review Needed', color: 'warning' },
+                { id: 2, title: 'Monthly Revenue', value: `₹${totalMonthlyRevenue}`, icon: 'DollarSign', trend: 'This Month', color: 'success' },
+                { id: 3, title: 'Store Sales', value: `₹${Number(revenueStore._sum.total || 0).toFixed(0)}`, icon: 'ShoppingBag', trend: 'Monthly', color: 'warning' },
                 { id: 4, title: 'Today Check-ins', value: todaysCheckIns, icon: 'CheckCircle', trend: 'Today', color: 'primary' },
             ],
+            newLeads,
+            todaysClasses: todaysClassesCount,
+            pendingApprovals: pendingApprovalsCount,
             revenueOverview,
             weeklyAttendance,
             checkInsByHour,
@@ -189,8 +272,12 @@ const getDashboardStats = async (req, res) => {
             },
             liveOccupancy: {
                 current: todaysCheckIns,
-                capacity: 50
-            }
+                capacity: 50 // In a real scenario, this could be fetched from Tenant settings
+            },
+            netProfit: storeNetProfit,
+            storeSales: Number(revenueStore._sum.total || 0),
+            recentFeedback,
+            taskStats
         });
 
     } catch (error) {
@@ -258,18 +345,16 @@ const getFinancialStats = async (req, res) => {
         const startOfDay = new Date();
         startOfDay.setHours(0, 0, 0, 0);
 
-        // 1. Fetch Invoices for Today (Paid only)
-        const invoices = await prisma.invoice.findMany({
-            where: {
-                ...whereClause,
-                status: 'Paid',
-                paidDate: { gte: startOfDay }
-            },
-            select: {
-                amount: true,
-                paymentMode: true
-            }
-        });
+        const [invoices, expensesSum] = await Promise.all([
+            prisma.invoice.findMany({
+                where: { ...whereClause, status: 'Paid', paidDate: { gte: startOfDay } },
+                select: { amount: true, paymentMode: true }
+            }),
+            prisma.expense.aggregate({
+                where: { ...whereClause, date: { gte: startOfDay } },
+                _sum: { amount: true }
+            })
+        ]);
 
         // 2. Aggregate by Payment Mode
         let cash = 0, upi = 0, card = 0;
@@ -280,16 +365,7 @@ const getFinancialStats = async (req, res) => {
             else if (inv.paymentMode === 'Card') card += amount;
         });
 
-        // 3. Fetch Expenses for Today
-        const expenses = await prisma.expense.aggregate({
-            where: {
-                ...whereClause,
-                date: { gte: startOfDay }
-            },
-            _sum: { amount: true }
-        });
-
-        const totalExpenses = parseFloat(expenses._sum.amount || 0);
+        const totalExpenses = parseFloat(expensesSum._sum.amount || 0);
 
         res.json({
             collection: {
@@ -321,50 +397,88 @@ const getRevenueReport = async (req, res) => {
         const endOfMonth = new Date(startOfMonth);
         endOfMonth.setMonth(endOfMonth.getMonth() + 1);
 
-        // 1. Total Revenue (Paid in current month)
-        const totalRevenue = await prisma.invoice.aggregate({
-            where: {
-                ...whereClause,
-                status: 'Paid',
-                paidDate: { gte: startOfMonth, lt: endOfMonth }
-            },
-            _sum: { amount: true }
-        });
+        const [totalRevenueInvoice, totalRevenueStore, pendingPaymentsInvoice, pendingPaymentsStore] = await Promise.all([
+            prisma.invoice.aggregate({
+                where: { ...whereClause, status: 'Paid', paidDate: { gte: startOfMonth, lt: endOfMonth } },
+                _sum: { amount: true }
+            }),
+            prisma.storeOrder.aggregate({
+                where: { ...whereClause, status: { in: ['Paid', 'Completed', 'Processing'] }, date: { gte: startOfMonth, lt: endOfMonth } },
+                _sum: { total: true }
+            }),
+            prisma.invoice.aggregate({
+                where: { ...whereClause, status: { in: ['Unpaid', 'unpaid', 'Partial'] } },
+                _sum: { amount: true }
+            }),
+            prisma.storeOrder.aggregate({
+                where: { ...whereClause, status: { notIn: ['Paid', 'Completed', 'Processing', 'Cancelled'] } },
+                _sum: { total: true }
+            })
+        ]);
 
-        // 2. Pending Payments (Unpaid or Partial due in current month)
-        const pendingPayments = await prisma.invoice.aggregate({
-            where: {
-                ...whereClause,
-                status: { in: ['Unpaid', 'unpaid', 'Partial'] }
-            },
-            _sum: { amount: true }
-        });
+        const totalMonthlyRevenue = (Number(totalRevenueInvoice._sum.amount) || 0) + (Number(totalRevenueStore._sum.total) || 0);
+        const totalPendingPayments = (Number(pendingPaymentsInvoice._sum.amount) || 0) + (Number(pendingPaymentsStore._sum.total) || 0);
 
-        // 3. Transactions (Table Data) — all tenant invoices
-        const transactions = await prisma.invoice.findMany({
+        // 3. Transactions (Table Data)
+        const invoices = await prisma.invoice.findMany({
             where: whereClause,
-            include: { member: { select: { name: true } } },
+            include: {
+                member: { select: { name: true } },
+                items: { select: { description: true }, take: 1 }
+            },
             orderBy: { dueDate: 'desc' },
-            take: 100
+            take: 50
         });
+
+        const storeOrders = await prisma.storeOrder.findMany({
+            where: whereClause,
+            include: {
+                member: { select: { name: true } }
+            },
+            orderBy: { date: 'desc' },
+            take: 50
+        });
+
+        const combinedTransactions = [
+            ...invoices.map(inv => ({
+                id: inv.id,
+                date: inv.paidDate || inv.dueDate,
+                member: inv.member?.name || 'Unknown',
+                service: inv.items[0]?.description || 'Membership Fee',
+                amount: inv.amount,
+                mode: inv.paymentMode,
+                status: inv.status,
+                type: 'Invoice'
+            })),
+            ...storeOrders.map(order => ({
+                id: order.id,
+                date: order.date,
+                member: order.member?.name || order.guestName || 'Walk-in Guest',
+                service: 'Store Purchase',
+                amount: order.total,
+                mode: order.paymentMode || 'N/A',
+                status: order.status === 'Completed' || order.status === 'Processing' ? 'Paid' : 'Unpaid',
+                type: 'Store'
+            }))
+        ].sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 100);
 
         // Mock Target (or fetch from settings if exists)
         const monthlyTarget = 500000;
 
         res.json({
             stats: [
-                { label: 'Total Revenue', value: (totalRevenue._sum.amount || 0).toLocaleString('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }), icon: 'DollarSign', bg: 'bg-indigo-50', color: 'text-indigo-600' },
+                { label: 'Total Revenue', value: (totalMonthlyRevenue).toLocaleString('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }), icon: 'DollarSign', bg: 'bg-indigo-50', color: 'text-indigo-600' },
                 { label: 'Monthly Target', value: (monthlyTarget).toLocaleString('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }), icon: 'TrendingUp', bg: 'bg-emerald-50', color: 'text-emerald-600' },
-                { label: 'Pending Payments', value: (pendingPayments._sum.amount || 0).toLocaleString('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }), icon: 'Banknote', bg: 'bg-amber-50', color: 'text-amber-600' },
+                { label: 'Pending Payments', value: (totalPendingPayments).toLocaleString('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }), icon: 'Banknote', bg: 'bg-amber-50', color: 'text-amber-600' },
             ],
-            revenueData: transactions.map(inv => ({
-                id: inv.id,
-                date: inv.paidDate ? new Date(inv.paidDate).toISOString().split('T')[0] : (inv.dueDate ? new Date(inv.dueDate).toISOString().split('T')[0] : 'N/A'),
-                member: inv.member?.name || 'Unknown',
-                service: 'Membership Fee',
-                amount: (inv.amount || 0).toLocaleString('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }),
-                mode: inv.paymentMode || 'N/A',
-                status: inv.status
+            revenueData: combinedTransactions.map(tx => ({
+                id: tx.id,
+                date: tx.date ? new Date(tx.date).toISOString().split('T')[0] : 'N/A',
+                member: tx.member,
+                service: tx.service,
+                amount: Number(tx.amount).toLocaleString('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }),
+                mode: tx.mode,
+                status: tx.status
             }))
         });
 
@@ -387,30 +501,11 @@ const getMembershipReport = async (req, res) => {
         const endOfMonth = new Date(startOfMonth);
         endOfMonth.setMonth(endOfMonth.getMonth() + 1);
 
-        // 1. Active Members Total
-        const activeMembersCount = await prisma.member.count({
-            where: {
-                ...whereClause,
-                status: 'Active'
-            }
-        });
-
-        // 2. New Joins (MTD)
-        const newJoinsCount = await prisma.member.count({
-            where: {
-                ...whereClause,
-                joinDate: { gte: startOfMonth, lt: endOfMonth }
-            }
-        });
-
-        // 3. Expired (MTD)
-        const expiredCount = await prisma.member.count({
-            where: {
-                ...whereClause,
-                status: 'Expired',
-                expiryDate: { gte: startOfMonth, lt: endOfMonth }
-            }
-        });
+        const [activeMembersCount, newJoinsCount, expiredCount] = await Promise.all([
+            prisma.member.count({ where: { ...whereClause, status: 'Active' } }),
+            prisma.member.count({ where: { ...whereClause, joinDate: { gte: startOfMonth, lt: endOfMonth } } }),
+            prisma.member.count({ where: { ...whereClause, status: 'Expired', expiryDate: { gte: startOfMonth, lt: endOfMonth } } })
+        ]);
 
         // 4. Member List (Table Data) — all members, not just this month
         const members = await prisma.member.findMany({
@@ -454,13 +549,10 @@ const getLeadConversionReport = async (req, res) => {
         const endOfMonth = new Date(startOfMonth);
         endOfMonth.setMonth(endOfMonth.getMonth() + 1);
 
-        // Stats: based on selected month
-        const totalLeads = await prisma.lead.count({
-            where: { ...whereClause, createdAt: { gte: startOfMonth, lt: endOfMonth } }
-        });
-        const convertedLeads = await prisma.lead.count({
-            where: { ...whereClause, status: 'Converted', updatedAt: { gte: startOfMonth, lt: endOfMonth } }
-        });
+        const [totalLeads, convertedLeads] = await Promise.all([
+            prisma.lead.count({ where: { ...whereClause, createdAt: { gte: startOfMonth, lt: endOfMonth } } }),
+            prisma.lead.count({ where: { ...whereClause, status: 'Converted', updatedAt: { gte: startOfMonth, lt: endOfMonth } } })
+        ]);
         const conversionRate = totalLeads > 0 ? ((convertedLeads / totalLeads) * 100).toFixed(1) : 0;
 
         // Table: show all leads for the tenant (most recent first)
@@ -505,34 +597,11 @@ const getExpenseReport = async (req, res) => {
         const endOfMonth = new Date(startOfMonth);
         endOfMonth.setMonth(endOfMonth.getMonth() + 1);
 
-        // 1. Total Expenses
-        const totalExpenses = await prisma.expense.aggregate({
-            where: {
-                ...whereClause,
-                date: { gte: startOfMonth, lt: endOfMonth }
-            },
-            _sum: { amount: true }
-        });
-
-        // 2. Operational Costs (Everything except Inventory category)
-        const operationalCosts = await prisma.expense.aggregate({
-            where: {
-                ...whereClause,
-                date: { gte: startOfMonth, lt: endOfMonth },
-                category: { not: 'Inventory' }
-            },
-            _sum: { amount: true }
-        });
-
-        // 3. Supplies/Inventory
-        const inventoryCosts = await prisma.expense.aggregate({
-            where: {
-                ...whereClause,
-                date: { gte: startOfMonth, lt: endOfMonth },
-                category: 'Inventory'
-            },
-            _sum: { amount: true }
-        });
+        const [totalExpenses, operationalCosts, inventoryCosts] = await Promise.all([
+            prisma.expense.aggregate({ where: { ...whereClause, date: { gte: startOfMonth, lt: endOfMonth } }, _sum: { amount: true } }),
+            prisma.expense.aggregate({ where: { ...whereClause, date: { gte: startOfMonth, lt: endOfMonth }, category: { not: 'Inventory' } }, _sum: { amount: true } }),
+            prisma.expense.aggregate({ where: { ...whereClause, date: { gte: startOfMonth, lt: endOfMonth }, category: 'Inventory' }, _sum: { amount: true } })
+        ]);
 
         // 4. Expense List — all tenant expenses
         const expenses = await prisma.expense.findMany({
@@ -569,80 +638,166 @@ const getPerformanceReport = async (req, res) => {
         const today = new Date();
         const startOfThisMonth = new Date(today.getFullYear(), today.getMonth(), 1);
 
-        // 1. Basic Stats
-        const totalMembers = await prisma.member.count({ where: { ...whereClause, status: { in: ['Active', 'active'] } } });
+        const [
+            totalMembers,
+            revenueMtdInvoice,
+            revenueMtdStore,
+            pendingDuesInvoice,
+            pendingDuesStore,
+            totalInvoicedInMonth,
+            totalStoreInvoicedInMonth,
+            bulkInvoices,
+            bulkOrders,
+            bulkExpenses,
+            bulkAttendance,
+            growthStats
+        ] = await Promise.all([
+            prisma.member.count({ where: { ...whereClause, status: { in: ['Active', 'active'] } } }),
+            prisma.invoice.aggregate({ where: { ...whereClause, status: { in: ['Paid', 'paid'] }, paidDate: { gte: startOfThisMonth } }, _sum: { amount: true } }),
+            prisma.storeOrder.aggregate({ where: { ...whereClause, status: { in: ['Paid', 'Completed', 'Processing'] }, date: { gte: startOfThisMonth } }, _sum: { total: true } }),
+            prisma.invoice.aggregate({ where: { ...whereClause, status: { in: ['Unpaid', 'unpaid', 'Partial', 'Overdue'] } }, _sum: { amount: true } }),
+            prisma.storeOrder.aggregate({ where: { ...whereClause, status: { notIn: ['Paid', 'Completed', 'Processing', 'Cancelled'] } }, _sum: { total: true } }),
+            prisma.invoice.aggregate({ where: { ...whereClause, paidDate: { gte: startOfThisMonth } }, _sum: { amount: true } }),
+            prisma.storeOrder.aggregate({ where: { ...whereClause, date: { gte: startOfThisMonth } }, _sum: { total: true } }),
+            // Last 12 months bulk
+            prisma.invoice.findMany({
+                where: { ...whereClause, status: { in: ['Paid', 'paid'] }, paidDate: { gte: new Date(new Date().setFullYear(today.getFullYear() - 1)) } },
+                select: { amount: true, paidDate: true }
+            }),
+            prisma.storeOrder.findMany({
+                where: { ...whereClause, status: { in: ['Paid', 'Completed', 'Processing'] }, date: { gte: new Date(new Date().setFullYear(today.getFullYear() - 1)) } },
+                include: { items: { include: { product: { select: { costPrice: true } } } } }
+            }),
+            prisma.expense.findMany({
+                where: { ...whereClause, date: { gte: new Date(new Date().setFullYear(today.getFullYear() - 1)) } },
+                select: { amount: true, date: true }
+            }).catch(() => []),
+            prisma.attendance.findMany({
+                where: { ...whereClause, checkIn: { gte: new Date(new Date().setDate(today.getDate() - 6)) } },
+                select: { checkIn: true }
+            }),
+            prisma.member.findMany({
+                where: { ...whereClause, joinDate: { gte: new Date(new Date().setFullYear(today.getFullYear() - 1)) } },
+                select: { joinDate: true }
+            })
+        ]);
 
-        const revenueThisMonthStr = await prisma.invoice.aggregate({
-            where: { ...whereClause, status: { in: ['Paid', 'paid'] }, paidDate: { gte: startOfThisMonth } },
-            _sum: { amount: true }
-        });
-        const revenueThisMonth = Number(revenueThisMonthStr._sum.amount || 0);
-
-        const pendingDuesStr = await prisma.invoice.aggregate({
-            where: { ...whereClause, status: { in: ['Unpaid', 'unpaid', 'Partial', 'Overdue'] } },
-            _sum: { amount: true }
-        });
-        const pendingDues = Number(pendingDuesStr._sum.amount || 0);
-
-        const totalInvoicedStr = await prisma.invoice.aggregate({
-            where: { ...whereClause, paidDate: { gte: startOfThisMonth } },
-            _sum: { amount: true }
-        });
-        const totalInvoiced = Number(totalInvoicedStr._sum.amount || 0);
+        const totalRevenueStoreInvoices = bulkOrders.reduce((sum, o) => sum + Number(o.total), 0);
+        const revenueThisMonth = Number(revenueMtdInvoice._sum.amount || 0) + Number(revenueMtdStore._sum.total || 0);
+        const pendingDues = Number(pendingDuesInvoice._sum.amount || 0) + Number(pendingDuesStore._sum.total || 0);
+        const totalInvoiced = Number(totalInvoicedInMonth._sum.amount || 0) + Number(totalStoreInvoicedInMonth._sum.total || 0);
 
         const collectionRate = totalInvoiced > 0 ? ((revenueThisMonth / totalInvoiced) * 100).toFixed(1) : 0;
 
-        // 2. Earnings Report (Last 12 months)
+        // Process data in memory
         const earningsValues = [];
         const earningsMonths = [];
         const profitValues = [];
         const expenseValues = [];
+        const growthMonths = [];
+        const growthLabels = [];
         let totalIncome = 0;
         let totalExpenses = 0;
+        let totalNetProfitCalculated = 0;
 
         for (let i = 11; i >= 0; i--) {
             const date = new Date(today.getFullYear(), today.getMonth() - i, 1);
-            const startStr = new Date(date.getFullYear(), date.getMonth(), 1);
-            const endStr = new Date(date.getFullYear(), date.getMonth() + 1, 1);
+            const m = date.getMonth();
+            const y = date.getFullYear();
 
-            const monthRev = await prisma.invoice.aggregate({
-                where: { ...whereClause, status: { in: ['Paid', 'paid'] }, paidDate: { gte: startStr, lt: endStr } },
-                _sum: { amount: true }
+            const membershipR = bulkInvoices
+                .filter(inv => { const d = new Date(inv.paidDate); return d.getMonth() === m && d.getFullYear() === y; })
+                .reduce((s, i) => s + Number(i.amount), 0);
+            
+            const ordersInMonth = bulkOrders
+                .filter(o => { const d = new Date(o.date); return d.getMonth() === m && d.getFullYear() === y; });
+
+            const storeR = ordersInMonth.reduce((s, o) => s + Number(o.total), 0);
+            const r = membershipR + storeR;
+
+            // Calculate Store Net Profit (Sale - Cost) for the month
+            const storeMonthProfit = ordersInMonth.reduce((acc, order) => {
+                const orderProfit = order.items.reduce((sum, item) => {
+                    const sale = Number(item.priceAtBuy) || 0;
+                    const cost = Number(item.product?.costPrice) || 0;
+                    return sum + (item.quantity * (sale - cost));
+                }, 0);
+                return acc + orderProfit;
+            }, 0);
+
+            const e = bulkExpenses
+                .filter(ex => { const d = new Date(ex.date); return d.getMonth() === m && d.getFullYear() === y; })
+                .reduce((s, ex) => s + Number(ex.amount), 0);
+
+            // Fetch Staff Salaries and Commissions for this month
+            // Note: This is an estimation for reports, ideally linked to a Payroll model
+            const staffInMonth = await prisma.user.findMany({
+                where: { ...whereClause, status: 'Active', role: { in: ['TRAINER', 'MANAGER', 'STAFF'] } },
+                select: { id: true, baseSalary: true, config: true, role: true }
             });
-            const monthExp = await prisma.expense.aggregate({
-                where: { ...whereClause, date: { gte: startStr, lt: endStr } },
-                _sum: { amount: true }
-            }).catch(() => ({ _sum: { amount: 0 } }));
 
-            const r = Number(monthRev._sum.amount || 0);
-            const e = Number(monthExp._sum.amount || 0);
+            let monthlyStaffCost = 0;
+            let monthlyCommissionsCost = 0;
+
+            for (const s of staffInMonth) {
+                monthlyStaffCost += parseFloat(s.baseSalary || 0);
+                
+                if (s.role === 'TRAINER') {
+                    let parsedConfig = {};
+                    try {
+                        if (s.config) parsedConfig = typeof s.config === 'string' ? JSON.parse(s.config) : s.config;
+                    } catch (e) { }
+
+                    const hRate = parsedConfig.hourlyRate || 500;
+                    const commFix = parsedConfig.commission || 0;
+
+                    // Sessions in this specific month
+                    const sessionsInMonth = await prisma.pTSession.count({
+                        where: { trainerId: s.id, status: 'Completed', date: { gte: date, lt: new Date(y, m + 1, 1) } }
+                    });
+                    
+                    // Fixed commission for general clients
+                    const assignedMembers = await prisma.member.count({
+                        where: { trainerId: s.id, status: 'Active' }
+                    });
+
+                    monthlyCommissionsCost += (sessionsInMonth * hRate) + (assignedMembers * commFix);
+                }
+            }
+
+            const totalMonthlyExpense = e + monthlyStaffCost + monthlyCommissionsCost;
+
+            totalIncome += r;
+            totalExpenses += totalMonthlyExpense;
+            totalNetProfitCalculated += (r - totalMonthlyExpense);
+
+            const g = growthStats
+                .filter(mem => { const d = new Date(mem.joinDate); return d.getMonth() === m && d.getFullYear() === y; }).length;
 
             earningsMonths.push(date.toLocaleString('default', { month: 'short' }).toUpperCase());
             earningsValues.push((r / 1000).toFixed(1));
-            profitValues.push(((r - e) / 1000).toFixed(1));
+            profitValues.push((storeMonthProfit / 1000).toFixed(1)); // Using Store Net Profit as profit per request
             expenseValues.push((e / 1000).toFixed(1));
-
-            totalIncome += r;
-            totalExpenses += e;
+            growthLabels.push(date.toLocaleString('default', { month: 'short' }));
+            growthMonths.push(g);
         }
 
-        // 3. Weekly Earnings (Last 7 days)
         const weeklyValues = [];
         const weeklyDays = [];
         for (let i = 6; i >= 0; i--) {
             const d = new Date(today);
             d.setDate(d.getDate() - i);
-            d.setHours(0, 0, 0, 0);
+            const dStr = d.toDateString();
 
-            const nextD = new Date(d);
-            nextD.setDate(d.getDate() + 1);
+            const r = bulkInvoices
+                .filter(inv => new Date(inv.paidDate).toDateString() === dStr)
+                .reduce((s, i) => s + Number(i.amount), 0) +
+                bulkOrders
+                .filter(o => new Date(o.date).toDateString() === dStr)
+                .reduce((s, o) => s + Number(o.total), 0);
 
-            const dRev = await prisma.invoice.aggregate({
-                where: { ...whereClause, status: { in: ['Paid', 'paid'] }, paidDate: { gte: d, lt: nextD } },
-                _sum: { amount: true }
-            });
             weeklyDays.push(d.toLocaleString('default', { weekday: 'short' }).toUpperCase());
-            weeklyValues.push((Number(dRev._sum.amount || 0) / 1000).toFixed(1));
+            weeklyValues.push((r / 1000).toFixed(1));
         }
 
         // 4. Member Retention (Distribution)
@@ -651,22 +806,6 @@ const getPerformanceReport = async (req, res) => {
             where: whereClause,
             _count: { id: true }
         });
-
-        // 5. Membership Growth (New members per month, last 12 months)
-        const growthMonths = [];
-        const growthLabels = [];
-        for (let i = 11; i >= 0; i--) {
-            const date = new Date(today.getFullYear(), today.getMonth() - i, 1);
-            const startStr = new Date(date.getFullYear(), date.getMonth(), 1);
-            const endStr = new Date(date.getFullYear(), date.getMonth() + 1, 1);
-
-            const count = await prisma.member.count({
-                where: { ...whereClause, joinDate: { gte: startStr, lt: endStr } }
-            });
-
-            growthLabels.push(date.toLocaleString('default', { month: 'short' }));
-            growthMonths.push(count);
-        }
 
         const revByPlan = await prisma.invoice.groupBy({
             by: ['notes'], // Note: Assuming notes or a relation links back to plans in current schema. 
@@ -746,7 +885,8 @@ const getPerformanceReport = async (req, res) => {
             recentOrders: recentOrders.map(o => ({
                 ...o,
                 date: o.date.toISOString().split('T')[0]
-            }))
+            })),
+            totalNetProfit: totalNetProfitCalculated
         });
 
     } catch (error) {

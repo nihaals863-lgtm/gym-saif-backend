@@ -39,6 +39,7 @@ const {
     updateTaskStatus,
     updateTask,
     createTask,
+    delegateTask,
     getTaskById,
     deleteTask,
     assignTask,
@@ -53,6 +54,7 @@ const {
     createClass,
     updateClass,
     deleteClass,
+    saveClassAttendance,
     getAnnouncements,
     createAnnouncement,
     getChats,
@@ -69,7 +71,12 @@ const {
     updateTenantSettings,
     getTrainerStats,
     getSystemHealth,
-    downloadAttendanceQrCode
+    downloadAttendanceQrCode,
+    getAttendanceQrPreview,
+    runReminders,
+    getNotificationSettings,
+    updateNotificationSettings,
+    syncStaffToMips
 } = require('../controllers/admin.controller');
 const { getTrainerRequests, updateTrainerRequest, updateStaffMember, deleteStaffMember } = require('../controllers/superadmin.controller');
 const { protect, authorize } = require('../middleware/auth.middleware');
@@ -88,6 +95,9 @@ router.use(authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER', 'STAFF', 'TRAINER
 // Settings
 router.get('/settings/tenant', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), getTenantSettings);
 router.patch('/settings/tenant', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), updateTenantSettings);
+router.get('/settings/notifications', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), getNotificationSettings);
+router.patch('/settings/notifications', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), updateNotificationSettings);
+router.post('/settings/reminders/run', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), runReminders);
 
 // Members — STAFF can view only, cannot create/edit/delete
 router.get('/members', getAllMembers);
@@ -117,6 +127,7 @@ router.delete('/bookings/:id', deleteBooking);
 router.get('/attendance', getCheckIns);
 router.get('/attendance/stats', getAttendanceStats);
 router.get('/attendance/live', getLiveCheckIn);
+router.get('/attendance-qr/preview', getAttendanceQrPreview);
 router.get('/attendance-qr/download-pdf', downloadAttendanceQrCode);
 router.delete('/attendance/:id', deleteCheckIn);
 
@@ -127,6 +138,7 @@ router.get('/tasks/:id', getTaskById);
 router.patch('/tasks/:id/status', updateTaskStatus);
 router.patch('/tasks/:id', updateTask);
 router.post('/tasks', createTask);
+router.post('/tasks/:id/delegate', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), delegateTask);
 router.delete('/tasks/:id', deleteTask);
 router.post('/tasks/assign', assignTask);
 
@@ -143,6 +155,7 @@ router.post('/staff/link', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), 
 router.get('/requests/trainers', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), getTrainerRequests);
 router.patch('/requests/trainers/:id', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), updateTrainerRequest);
 router.patch('/staff/:id', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), updateStaffMember);
+router.post('/staff/:id/sync', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), syncStaffToMips);
 router.delete('/staff/:id', authorize('SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER'), deleteStaffMember);
 
 // Service Requests (Members)
@@ -165,6 +178,7 @@ router.get('/classes/:id', getClassById);
 router.post('/classes', createClass);
 router.patch('/classes/:id', updateClass);
 router.delete('/classes/:id', deleteClass);
+router.post('/classes/:id/attendance', saveClassAttendance);
 
 // Communication
 router.get('/communication/announcements', getAnnouncements);

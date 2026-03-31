@@ -268,22 +268,94 @@ const bulkCreateLockers = async (req, res) => {
 const assignLocker = async (req, res) => {
     try {
         const { id } = req.params; // locker db id
-        const { memberId, isPaid } = req.body;
-        const { tenantId, role } = req.user;
+        const { memberId, isPaid: manualIsPaid } = req.body;
+        const { tenantId: userTenantId, role } = req.user;
 
-        const updateData = {
-            status: 'Assigned',
-            assignedToId: parseInt(memberId),
-            isPaid: isPaid ?? false
-        };
-
-        const locker = await prisma.locker.update({
+        // 1. Fetch Locker & Member Details
+        const locker = await prisma.locker.findUnique({
             where: { id: parseInt(id) },
-            data: updateData
+            include: { tenant: true }
         });
 
-        res.json(locker);
+        if (!locker) return res.status(404).json({ message: 'Locker not found' });
+        if (locker.status === 'Assigned') return res.status(400).json({ message: 'Locker already assigned' });
+
+        const member = await prisma.member.findUnique({
+            where: { id: parseInt(memberId) },
+            include: { plan: true }
+        });
+
+        if (!member) return res.status(404).json({ message: 'Member not found' });
+
+        // 2. Check for Free Locker Benefits
+        let isFreeByPlan = false;
+        if (member.plan?.benefits) {
+            try {
+                const benefits = typeof member.plan.benefits === 'string' 
+                    ? JSON.parse(member.plan.benefits) 
+                    : member.plan.benefits;
+                
+                // Check if "Locker" is in benefits list
+                if (Array.isArray(benefits)) {
+                    isFreeByPlan = benefits.some(b => 
+                        (typeof b === 'string' && b.toLowerCase().includes('locker')) ||
+                        (b.name && b.name.toLowerCase().includes('locker'))
+                    );
+                }
+            } catch (e) {
+                console.error("Benefit parse error:", e);
+            }
+        }
+
+        const isActuallyChargeable = locker.isChargeable && !isFreeByPlan;
+        const price = isActuallyChargeable ? parseFloat(locker.price || 0) : 0;
+
+        // 3. Execution using Transaction
+        const updatedLocker = await prisma.$transaction(async (tx) => {
+            // Create Invoice if it's a paid assignment
+            let invoice = null;
+            if (isActuallyChargeable && price > 0) {
+                invoice = await tx.invoice.create({
+                    data: {
+                        tenantId: member.tenantId,
+                        memberId: member.id,
+                        invoiceNumber: `LCK-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
+                        amount: price,
+                        subtotal: price,
+                        status: 'Unpaid',
+                        dueDate: new Date(),
+                        notes: `Locker Assignment: ${locker.number} (${locker.size})`,
+                        items: {
+                            create: [{
+                                description: `Locker Assignment Fee - #${locker.number}`,
+                                quantity: 1,
+                                rate: price,
+                                amount: price
+                            }]
+                        }
+                    }
+                });
+            }
+
+            // Update Locker
+            return await tx.locker.update({
+                where: { id: parseInt(id) },
+                data: {
+                    status: 'Assigned',
+                    assignedToId: member.id,
+                    isPaid: !isActuallyChargeable || (manualIsPaid ?? false),
+                    notes: `Assigned to ${member.name} on ${new Date().toLocaleDateString()}${isFreeByPlan ? ' (Member Benefit)' : ''}`
+                },
+                include: { assignedTo: true }
+            });
+        });
+
+        res.json({
+            message: isFreeByPlan ? "Locker assigned as member benefit" : (isActuallyChargeable ? "Paid locker assigned, invoice generated" : "Locker assigned"),
+            data: updatedLocker
+        });
     } catch (error) {
+        console.error("Locker assignment error:", error);
         res.status(500).json({ message: error.message });
     }
 };
