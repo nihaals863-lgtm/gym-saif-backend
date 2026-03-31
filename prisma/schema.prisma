@@ -12,17 +12,24 @@ model Tenant {
   name              String
   branchName        String?
   owner             String?
-  managerName       String?
-  managerEmail      String?
   phone             String?
   location          String?
   status            String            @default("Active")
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt
+  managerEmail      String?
+  managerName       String?
+  sdkApiKey         String?
+  sdkApiSecret      String?
+  Amenity           Amenity[]
+  announcements     Announcement[]
   Attendance        Attendance[]
   classes           Class[]
+  commissions       Commission[]
+  coupons           Coupon[]
   equipment         Equipment[]
   expenses          Expense[]
+  expenseCategories ExpenseCategory[]
   inventory         Inventory[]
   invoices          Invoice[]
   leads             Lead[]
@@ -30,23 +37,16 @@ model Tenant {
   members           Member[]
   plans             MembershipPlan[]
   payroll           Payroll[]
-  commissions       Commission[]
-  users             User[]
-  announcements     Announcement[]
-  coupons           Coupon[]
-  storeCategories   StoreCategory[]
-  storeProducts     StoreProduct[]
-  storeOrders       StoreOrder[]
-  Amenity           Amenity[]
-  tasks             Task[]
-  expenseCategories ExpenseCategory[]
-  serviceRequests   ServiceRequest[]
-  ptPackages        PTPackage[]
   ptAccounts        PTMemberAccount[]
+  ptPackages        PTPackage[]
   ptSessions        PTSession[]
+  serviceRequests   ServiceRequest[]
+  storeCategories   StoreCategory[]
+  storeOrders       StoreOrder[]
+  storeProducts     StoreProduct[]
   subscriptions     Subscription[]
-  sdkApiKey         String?
-  sdkApiSecret      String?
+  tasks             Task[]
+  users             User[]
 
   @@map("tenant")
 }
@@ -65,45 +65,44 @@ model ExpenseCategory {
 }
 
 model User {
-  id             Int          @id @default(autoincrement())
-  email          String       @unique
-  password       String
-  name           String
-  phone          String?
-  role           Role
-  status         String       @default("Active")
-  avatar         String?
-  tenantId       Int?
-  joinedDate     DateTime     @default(now())
-  lastLogin      DateTime?
-  address        String?      @db.Text
-  accountNumber  String?
-  baseSalary     Decimal?     @db.Decimal(10, 2)
-  config         String?      @db.LongText
-  department     String?
-  documents      String?      @db.LongText
-  ifsc           String?
-  mipsPersonSn   String?
-  mipsPersonId   String?
-  mipsSyncStatus String?  @default("pending")
-  mipsSyncedAt   DateTime?
-  employeeCode   String?
-  attendances    Attendance[]
-  classes        Class[]
-  assignedLeads  Lead[]       @relation("LeadAssignee")
-  assignedMember Member[]     @relation("TrainerToMember")
-  assignedTasks  Task[]       @relation("AssignedTasks")
-  createdTasks   Task[]       @relation("CreatedTasks")
-  managedTasks   Task[]       @relation("ManagerTasks")
-  performingTasks Task[]      @relation("StaffTasks")
-  ptSessions     PTSession[]  @relation("TrainerSessions")
-  tenant         Tenant?      @relation(fields: [tenantId], references: [id])
-
-  sentMessages     ChatMessage[] @relation("SentMessages")
-  receivedMessages ChatMessage[] @relation("ReceivedMessages")
+  id               Int            @id @default(autoincrement())
+  email            String         @unique
+  password         String
+  name             String
+  phone            String?
+  role             Role
+  status           String         @default("Active")
+  avatar           String?
+  tenantId         Int?
+  joinedDate       DateTime       @default(now())
+  lastLogin        DateTime?
+  address          String?        @db.Text
+  accountNumber    String?
+  baseSalary       Decimal?       @db.Decimal(10, 2)
+  config           String?        @db.LongText
+  department       String?
+  documents        String?        @db.LongText
+  ifsc             String?
+  employeeCode     String?
+  mipsPersonId     String?
+  mipsPersonSn     String?
+  mipsSyncStatus   String?        @default("pending")
+  mipsSyncedAt     DateTime?
+  attendances      Attendance[]
+  receivedMessages ChatMessage[]  @relation("ReceivedMessages")
+  sentMessages     ChatMessage[]  @relation("SentMessages")
+  classes          Class[]
+  commissions      Commission[]   @relation("TrainerCommissions")
+  assignedLeads    Lead[]         @relation("LeadAssignee")
+  assignedMember   Member[]       @relation("TrainerToMember")
   notifications    Notification[] @relation("UserNotifications")
   payrolls         Payroll[]
-  commissions      Commission[]   @relation("TrainerCommissions")
+  ptSessions       PTSession[]    @relation("TrainerSessions")
+  assignedTasks    Task[]         @relation("AssignedTasks")
+  createdTasks     Task[]         @relation("CreatedTasks")
+  managedTasks     Task[]         @relation("ManagerTasks")
+  performingTasks  Task[]         @relation("StaffTasks")
+  tenant           Tenant?        @relation(fields: [tenantId], references: [id])
 
   @@index([tenantId], map: "user_tenantId_fkey")
   @@map("user")
@@ -114,9 +113,9 @@ model Notification {
   userId    Int
   title     String
   message   String   @db.Text
-  type      String   @default("info") // info, success, warning, danger
+  type      String   @default("info")
   read      Boolean  @default(false)
-  link      String?  // Optional path to redirect to
+  link      String?
   createdAt DateTime @default(now())
   user      User     @relation("UserNotifications", fields: [userId], references: [id])
 
@@ -125,17 +124,17 @@ model Notification {
 }
 
 model SaaSPlan {
-  id          Int      @id @default(autoincrement())
-  name        String
-  price       Decimal  @db.Decimal(10, 2)
-  period      String
-  features    String?  @db.LongText
-  status      String   @default("Active")
-  benefits    String?  @db.LongText
-  createdAt   DateTime @default(now())
-  description String?  @db.Text
-  limits      String?  @db.LongText
-  opsLimits   String?  @db.LongText
+  id            Int            @id @default(autoincrement())
+  name          String
+  price         Decimal        @db.Decimal(10, 2)
+  period        String
+  features      String?        @db.LongText
+  status        String         @default("Active")
+  benefits      String?        @db.LongText
+  createdAt     DateTime       @default(now())
+  description   String?        @db.Text
+  limits        String?        @db.LongText
+  opsLimits     String?        @db.LongText
   updatedAt     DateTime       @updatedAt
   subscriptions Subscription[]
 
@@ -151,8 +150,8 @@ model Subscription {
   endDate       DateTime
   status        String
   paymentStatus String
-  tenant        Tenant   @relation(fields: [tenantId], references: [id])
   plan          SaaSPlan @relation(fields: [planId], references: [id])
+  tenant        Tenant   @relation(fields: [tenantId], references: [id])
 
   @@index([tenantId], map: "subscription_tenantId_fkey")
   @@index([planId], map: "subscription_planId_fkey")
@@ -167,8 +166,8 @@ model AuditLog {
   details        String?  @db.Text
   module         String
   ip             String?
-  status         String   @default("Open")
   createdAt      DateTime @default(now())
+  status         String   @default("Open")
 
   @@map("auditlog")
 }
@@ -233,16 +232,16 @@ model Device {
   lastSeen     DateTime @default(now())
   entriesToday Int      @default(0)
   ipAddress    String?
+  branchId     Int?
+  companyId    Int?
+  deviceToken  String?
   port         Int?     @default(80)
   protocol     String?  @default("HTTP")
   sdkType      String?
+  createdAt    DateTime @default(now())
+  deviceKey    String?  @unique
   sdkApiKey    String?
   sdkApiSecret String?
-  deviceKey    String?  @unique
-  deviceToken  String?
-  companyId    Int?
-  branchId     Int?
-  createdAt    DateTime @default(now())
 
   @@map("device")
 }
@@ -255,10 +254,10 @@ model MipsConnection {
   password     String
   tenantId     String   @default("1")
   isActive     Boolean  @default(true)
-  sdkApiKey    String?
-  sdkApiSecret String?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
+  sdkApiKey    String?
+  sdkApiSecret String?
 
   @@map("mips_connections")
 }
@@ -283,31 +282,33 @@ model Member {
   medicalHistory  String?           @db.Text
   name            String?
   phone           String?
-  targetWeight    Decimal?          @db.Decimal(5, 2)
   targetBodyFat   Decimal?          @db.Decimal(5, 2)
-  dob             String?
-  source          String?
-  referralCode    String?
-  idType          String?
-  idNumber        String?
+  targetWeight    Decimal?          @db.Decimal(5, 2)
   address         String?           @db.Text
-  mipsPersonSn    String?
+  dob             String?
+  idNumber        String?
+  idType          String?
+  referralCode    String?
+  source          String?
   mipsPersonId    String?
-  mipsSyncStatus  String?  @default("pending")
+  mipsPersonSn    String?
+  mipsSyncStatus  String?           @default("pending")
   mipsSyncedAt    DateTime?
-  bookings        Booking[]
-  storeOrders     StoreOrder[]
-  lockers         Locker[]
-  invoices        Invoice[]
+  amenityBookings AmenityBooking[]
+  amenityUsages   AmenityUsage[]
   attendances     Attendance[]
-  serviceRequests ServiceRequest[]
-  ptAccounts      PTMemberAccount[]
-  ptSessions      PTSession[]
-  usedCoupons     UsedCoupon[]
-  commissions     Commission[]
+  bookings        Booking[]
+  commissions     Commission[]      @relation("MemberCommissions")
+  invoices        Invoice[]
+  lockers         Locker[]
   plan            MembershipPlan?   @relation(fields: [planId], references: [id])
   tenant          Tenant            @relation(fields: [tenantId], references: [id])
   trainer         User?             @relation("TrainerToMember", fields: [trainerId], references: [id])
+  ptAccounts      PTMemberAccount[]
+  ptSessions      PTSession[]
+  serviceRequests ServiceRequest[]
+  storeOrders     StoreOrder[]
+  usedCoupons     UsedCoupon[]
 
   @@index([planId], map: "member_planId_fkey")
   @@index([tenantId], map: "member_tenantId_fkey")
@@ -329,9 +330,8 @@ model ServiceRequest {
   date      DateTime @default(now())
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-
-  tenant Tenant @relation(fields: [tenantId], references: [id])
-  member Member @relation(fields: [memberId], references: [id])
+  member    Member   @relation(fields: [memberId], references: [id])
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
 
   @@index([tenantId], map: "service_request_tenantId_fkey")
   @@index([memberId], map: "service_request_memberId_fkey")
@@ -353,11 +353,11 @@ model MembershipPlan {
   durationType       String   @default("Months")
   maxBookingsPerDay  Int      @default(1)
   maxBookingsPerWeek Int      @default(7)
+  updatedAt          DateTime @updatedAt
   allowTransfer      Boolean  @default(false)
+  includeLocker      Boolean  @default(false)
   showInPurchase     Boolean  @default(true)
   showOnDashboard    Boolean  @default(true)
-  includeLocker      Boolean  @default(false)
-  updatedAt          DateTime @updatedAt
   members            Member[]
   tenant             Tenant   @relation(fields: [tenantId], references: [id])
 
@@ -373,8 +373,6 @@ model Lead {
   phone            String
   source           String?
   status           String     @default("New")
-  rewardStatus     String     @default("Pending")
-  lostReason       String?
   createdAt        DateTime   @default(now())
   age              Int?
   assignedToId     Int?
@@ -385,6 +383,8 @@ model Lead {
   notes            String?    @db.Text
   preferredContact String?    @default("WhatsApp")
   updatedAt        DateTime   @updatedAt
+  lostReason       String?
+  rewardStatus     String     @default("Pending")
   followUps        FollowUp[]
   assignedTo       User?      @relation("LeadAssignee", fields: [assignedToId], references: [id])
   tenant           Tenant     @relation(fields: [tenantId], references: [id])
@@ -420,10 +420,10 @@ model Class {
   maxCapacity     Int
   duration        String?
   location        String?
-  price           Decimal?  @db.Decimal(10, 2)
   requiredBenefit String?
   status          String    @default("Scheduled")
-  type            String    @default("Workout") // Workout or Recovery
+  price           Decimal?  @db.Decimal(10, 2)
+  type            String    @default("Workout")
   bookings        Booking[]
   tenant          Tenant    @relation(fields: [tenantId], references: [id])
   trainer         User?     @relation(fields: [trainerId], references: [id])
@@ -434,7 +434,7 @@ model Class {
 }
 
 model Booking {
-  id       Int      @id @default(autoincrement())
+  id       Int       @id @default(autoincrement())
   memberId Int
   classId  Int
   date     DateTime
@@ -467,18 +467,18 @@ model Locker {
   id           Int      @id @default(autoincrement())
   tenantId     Int?
   number       String
-  status       String   @default("Available") // Available, Assigned, Maintenance, Reserved
-  size         String   @default("Medium") // Small, Medium, Large
-  area         String?
-  notes        String?  @db.Text
-  isChargeable Boolean  @default(false)
-  price        Decimal  @default(0.00) @db.Decimal(10, 2)
-  isPaid       Boolean  @default(false)
+  status       String   @default("Available")
   assignedToId Int?
+  area         String?
+  createdAt    DateTime @default(now())
+  isChargeable Boolean  @default(false)
+  isPaid       Boolean  @default(false)
+  notes        String?  @db.Text
+  price        Decimal  @default(0.00) @db.Decimal(10, 2)
+  size         String   @default("Medium")
+  updatedAt    DateTime @updatedAt
   assignedTo   Member?  @relation(fields: [assignedToId], references: [id])
   tenant       Tenant?  @relation(fields: [tenantId], references: [id])
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
 
   @@index([tenantId], map: "locker_tenantId_fkey")
   @@index([assignedToId], map: "locker_memberId_fkey")
@@ -497,9 +497,9 @@ model Equipment {
   location       String?
   model          String?
   purchaseDate   DateTime?
-  purchasePrice  Decimal?             @db.Decimal(10, 2)
   serialNumber   String?
   warrantyExpiry DateTime?
+  purchasePrice  Decimal?             @db.Decimal(10, 2)
   tenant         Tenant?              @relation(fields: [tenantId], references: [id])
   maintenance    MaintenanceRequest[]
 
@@ -511,12 +511,12 @@ model MaintenanceRequest {
   id          Int       @id @default(autoincrement())
   equipmentId Int
   issue       String
-  description String?   @db.Text
   priority    String
   status      String    @default("Pending")
-  cost        Decimal?  @default(0.00) @db.Decimal(10, 2)
   createdAt   DateTime  @default(now())
   completedAt DateTime?
+  cost        Decimal?  @default(0.00) @db.Decimal(10, 2)
+  description String?   @db.Text
   equipment   Equipment @relation(fields: [equipmentId], references: [id])
 
   @@index([equipmentId], map: "maintenancerequest_equipmentId_fkey")
@@ -524,44 +524,49 @@ model MaintenanceRequest {
 }
 
 model Invoice {
-  id            Int           @id @default(autoincrement())
-  tenantId      Int
-  invoiceNumber String        @unique
-  memberId      Int?
-  subtotal      Decimal       @default(0.00) @db.Decimal(10, 2)
-  taxRate       Decimal       @default(0.00) @db.Decimal(10, 2)
-  taxAmount     Decimal       @default(0.00) @db.Decimal(10, 2)
-  discount      Decimal       @default(0.00) @db.Decimal(10, 2)
-  amount        Decimal       @db.Decimal(10, 2)
-  status        String        @default("Unpaid")
-  dueDate       DateTime
-  paidDate      DateTime?
-  paymentMode   String        @default("Cash")
-  notes         String?       @db.Text
-  createdAt     DateTime      @default(now())
-  updatedAt     DateTime      @default(now()) @updatedAt
-  bookingId     Int?
-  booking       Booking?      @relation(fields: [bookingId], references: [id])
-  items         InvoiceItem[]
-  member        Member?       @relation(fields: [memberId], references: [id])
-  tenant        Tenant        @relation(fields: [tenantId], references: [id])
+  id             Int           @id @default(autoincrement())
+  tenantId       Int
+  invoiceNumber  String        @unique
+  memberId       Int?
+  amount         Decimal       @db.Decimal(10, 2)
+  status         String        @default("Unpaid")
+  dueDate        DateTime
+  paidDate       DateTime?
+  paymentMode    String        @default("Cash")
+  discount       Decimal       @default(0.00) @db.Decimal(10, 2)
+  notes          String?       @db.Text
+  subtotal       Decimal       @default(0.00) @db.Decimal(10, 2)
+  taxAmount      Decimal       @default(0.00) @db.Decimal(10, 2)
+  taxRate        Decimal       @default(0.00) @db.Decimal(10, 2)
+  bookingId      Int?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @default(now()) @updatedAt
+  balance        Decimal       @default(0.00) @db.Decimal(10, 2)
+  balanceDueDate DateTime?
+  paidAmount     Decimal       @default(0.00) @db.Decimal(10, 2)
+  booking        Booking?      @relation(fields: [bookingId], references: [id])
+  member         Member?       @relation(fields: [memberId], references: [id])
+  tenant         Tenant        @relation(fields: [tenantId], references: [id])
+  items          InvoiceItem[]
 
   @@index([tenantId], map: "invoice_tenantId_fkey")
   @@index([status])
   @@index([paidDate])
+  @@index([bookingId], map: "invoice_bookingId_fkey")
+  @@index([memberId], map: "invoice_memberId_fkey")
   @@map("invoice")
 }
 
 model InvoiceItem {
-  id          Int     @id @default(autoincrement())
+  id          Int      @id @default(autoincrement())
   invoiceId   Int
   description String
   quantity    Int
-  rate        Decimal @db.Decimal(10, 2)
-  amount      Decimal @db.Decimal(10, 2)
+  rate        Decimal  @db.Decimal(10, 2)
+  amount      Decimal  @db.Decimal(10, 2)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @default(now()) @updatedAt
-  invoice     Invoice @relation(fields: [invoiceId], references: [id])
+  invoice     Invoice  @relation(fields: [invoiceId], references: [id])
 
   @@index([invoiceId], map: "invoiceitem_invoiceId_fkey")
   @@map("invoice_item")
@@ -584,21 +589,21 @@ model Expense {
 }
 
 model Payroll {
-  id             Int      @id @default(autoincrement())
-  tenantId       Int
-  staffId        Int
-  baseSalary     Decimal  @default(0.00) @db.Decimal(10, 2)
-  attendanceDays Int      @default(0)
-  leaveDays      Int      @default(0)
-  commission     Decimal  @default(0.00) @db.Decimal(10, 2)
-  leaveDeduction Decimal  @default(0.00) @db.Decimal(10, 2)
-  amount         Decimal  @db.Decimal(10, 2)
-  month          Int
-  year           Int
-  status         String   @default("Pending") // Pending, Approved, Confirmed, Rejected, Paid
-  rejectionReason String?  @db.Text
-  tenant         Tenant   @relation(fields: [tenantId], references: [id])
-  staff          User     @relation(fields: [staffId], references: [id])
+  id              Int     @id @default(autoincrement())
+  tenantId        Int
+  staffId         Int
+  amount          Decimal @db.Decimal(10, 2)
+  month           Int
+  year            Int
+  status          String  @default("Pending")
+  attendanceDays  Int     @default(0)
+  baseSalary      Decimal @default(0.00) @db.Decimal(10, 2)
+  commission      Decimal @default(0.00) @db.Decimal(10, 2)
+  leaveDays       Int     @default(0)
+  leaveDeduction  Decimal @default(0.00) @db.Decimal(10, 2)
+  rejectionReason String? @db.Text
+  staff           User    @relation(fields: [staffId], references: [id])
+  tenant          Tenant  @relation(fields: [tenantId], references: [id])
 
   @@index([tenantId], map: "payroll_tenantId_fkey")
   @@index([staffId], map: "payroll_staffId_fkey")
@@ -606,20 +611,20 @@ model Payroll {
 }
 
 model Attendance {
-  id              Int       @id @default(autoincrement())
-  userId          Int?
-  memberId        Int?
-  checkIn         DateTime?
-  checkOut        DateTime?
-  checkInMethod   String?
-  checkOutMethod  String?
-  type            String
-  date            DateTime  @default(now())
-  status          String    @default("Present")
-  tenantId        Int       @default(1)
-  tenant   Tenant    @relation(fields: [tenantId], references: [id])
-  user     User?     @relation(fields: [userId], references: [id])
-  member   Member?   @relation(fields: [memberId], references: [id])
+  id             Int       @id @default(autoincrement())
+  userId         Int?
+  checkIn        DateTime?
+  checkOut       DateTime?
+  type           String
+  date           DateTime  @default(now())
+  status         String    @default("Present")
+  tenantId       Int       @default(1)
+  memberId       Int?
+  checkInMethod  String?
+  checkOutMethod String?
+  member         Member?   @relation(fields: [memberId], references: [id])
+  tenant         Tenant    @relation(fields: [tenantId], references: [id])
+  user           User?     @relation(fields: [userId], references: [id])
 
   @@index([tenantId], map: "attendance_tenantId_fkey")
   @@index([userId], map: "attendance_userId_fkey")
@@ -657,38 +662,32 @@ model TrainerAvailability {
 }
 
 model Task {
-  id           Int      @id @default(autoincrement())
-  title        String
-  description  String?  @db.Text
-  priority     String   @default("Medium")
-  status       String   @default("Pending") // Pending, In Progress, Completed, Approved
-  dueDate      DateTime
-  
-  tenantId     Int?
-  tenant       Tenant? @relation(fields: [tenantId], references: [id])
-
-  creatorId    Int
-  creator      User    @relation("CreatedTasks", fields: [creatorId], references: [id])
-
-  managerId    Int?
-  manager      User?   @relation("ManagerTasks", fields: [managerId], references: [id])
-
-  staffId      Int?
-  staff        User?   @relation("StaffTasks", fields: [staffId], references: [id])
-
-  delegationNote String? @db.Text
+  id             Int       @id @default(autoincrement())
+  title          String
+  assignedToId   Int?
+  creatorId      Int
+  priority       String    @default("Medium")
+  dueDate        DateTime
+  status         String    @default("Pending")
+  description    String?   @db.Text
+  tenantId       Int?
+  createdAt      DateTime  @default(now())
+  delegationNote String?   @db.Text
+  managerId      Int?
   staffDeadline  DateTime?
-
-  assignedToId Int?
-  assignedTo   User?    @relation("AssignedTasks", fields: [assignedToId], references: [id])
-
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  staffId        Int?
+  updatedAt      DateTime  @updatedAt
+  assignedTo     User?     @relation("AssignedTasks", fields: [assignedToId], references: [id])
+  creator        User      @relation("CreatedTasks", fields: [creatorId], references: [id])
+  manager        User?     @relation("ManagerTasks", fields: [managerId], references: [id])
+  staff          User?     @relation("StaffTasks", fields: [staffId], references: [id])
+  tenant         Tenant?   @relation(fields: [tenantId], references: [id])
 
   @@index([assignedToId], map: "Task_assignedToId_fkey")
   @@index([creatorId], map: "Task_creatorId_fkey")
   @@index([managerId])
   @@index([staffId])
+  @@index([tenantId], map: "task_tenantId_fkey")
   @@map("task")
 }
 
@@ -728,18 +727,19 @@ model MemberProgress {
 
 model Announcement {
   id         Int      @id @default(autoincrement())
-  tenantId   Int      @default(1)
-  authorId   Int
   title      String
   content    String   @db.Text
-  targetRole String   @default("all")
-  priority   Int      @default(0)
-  status     String   @default("Active")
+  authorId   Int
   createdAt  DateTime @default(now())
+  priority   Int      @default(0)
+  targetRole String   @default("all")
+  tenantId   Int      @default(1)
+  status     String   @default("Active")
   updatedAt  DateTime @default(now()) @updatedAt
   tenant     Tenant   @relation(fields: [tenantId], references: [id])
 
   @@index([authorId], map: "Announcement_authorId_fkey")
+  @@index([tenantId], map: "announcement_tenantId_fkey")
   @@map("announcement")
 }
 
@@ -748,8 +748,8 @@ model MessageTemplate {
   tenantId  Int      @default(1)
   name      String
   content   String   @db.LongText
-  channel   String // WhatsApp, SMS, Email
-  category  String // Welcome, Reminder, Promo, etc.
+  channel   String
+  category  String
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -761,47 +761,38 @@ model CommunicationLog {
   tenantId  Int      @default(1)
   senderId  Int?
   memberId  Int?
-  channel   String // WhatsApp, SMS, Email
+  channel   String
   message   String   @db.LongText
-  status    String   @default("Sent") // Sent, Failed, Pending
+  status    String   @default("Sent")
   createdAt DateTime @default(now())
 
   @@map("communication_log")
 }
 
 model TenantSettings {
-  id              Int     @id @default(autoincrement())
-  tenantId        Int     @unique
-  logo            String?
-  timezone        String  @default("UTC")
-  currency        String  @default("USD")
-  email           String?
-  whatsappEnabled Boolean @default(false)
-  fiscalYearStart String  @default("April")
-
-  // Email Notifications
-  membershipReminders Boolean @default(true)
-  paymentReceipts     Boolean @default(true)
-  classNotifications  Boolean @default(true)
-  announcements       Boolean @default(true)
-
-  // System Alerts
-  lowStockAlerts Boolean @default(true)
-  newLeadAlerts  Boolean @default(true)
-  paymentAlerts  Boolean @default(true)
-  taskReminders  Boolean @default(true)
-
-  // Security Settings
-  twoFactorAuth   Boolean @default(false)
-  sessionTimeout  Boolean @default(true)
-  sessionDuration String  @default("8")
-  loginAlerts     Boolean @default(true)
-  
-  // Google Reviews
+  id                    Int     @id @default(autoincrement())
+  tenantId              Int     @unique
+  logo                  String?
+  timezone              String  @default("UTC")
+  currency              String  @default("USD")
+  whatsappEnabled       Boolean @default(false)
+  announcements         Boolean @default(true)
+  classNotifications    Boolean @default(true)
+  fiscalYearStart       String  @default("April")
   googleBusinessEnabled Boolean @default(false)
   googleReviewLink      String? @db.Text
-
-  referralReward Int @default(500)
+  loginAlerts           Boolean @default(true)
+  lowStockAlerts        Boolean @default(true)
+  membershipReminders   Boolean @default(true)
+  newLeadAlerts         Boolean @default(true)
+  paymentAlerts         Boolean @default(true)
+  paymentReceipts       Boolean @default(true)
+  sessionDuration       String  @default("8")
+  sessionTimeout        Boolean @default(true)
+  taskReminders         Boolean @default(true)
+  twoFactorAuth         Boolean @default(false)
+  referralReward        Int     @default(500)
+  email                 String?
 
   @@map("tenantsettings")
 }
@@ -819,14 +810,14 @@ model Reward {
 }
 
 model Feedback {
-  id       Int      @id @default(autoincrement())
-  tenantId Int?
-  memberId Int?
-  rating   Int
-  comment  String   @db.Text
+  id                  Int      @id @default(autoincrement())
+  tenantId            Int?
+  memberId            Int?
+  rating              Int
+  comment             String   @db.Text
   status              String   @default("Pending")
-  isPublishedToGoogle Boolean  @default(false)
   date                DateTime @default(now())
+  isPublishedToGoogle Boolean  @default(false)
 
   @@map("feedback")
 }
@@ -844,10 +835,10 @@ model DietPlan {
   meals     String    @db.LongText
   notes     String?   @db.Text
   status    String    @default("Active")
-  startDate DateTime?
-  endDate   DateTime?
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
+  endDate   DateTime?
+  startDate DateTime?
 
   @@map("diet_plan")
 }
@@ -866,47 +857,47 @@ model WorkoutPlan {
   intensity      String
   status         String    @default("Active")
   days           String    @db.LongText
-  startDate      DateTime?
-  endDate        DateTime?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
+  endDate        DateTime?
+  startDate      DateTime?
 
   @@map("workout_plan")
 }
 
 model Coupon {
-  id                  Int          @id @default(autoincrement())
-  tenantId            Int?
-  code                String       @unique
-  description         String?      @db.Text
-  type                String       @default("Percentage") // Percentage or Fixed
-  value               Decimal      @db.Decimal(10, 2)
-  minPurchase         Decimal?     @default(0.00) @db.Decimal(10, 2)
-  maximumDiscount     Decimal?     @db.Decimal(10, 2) // max discount cap for percentage coupons
-  maxUses             Int?         @default(0) // 0 for unlimited
-  usedCount           Int          @default(0)
-  startDate           DateTime     @default(now())
-  endDate             DateTime?
-  status              String       @default("Active")
-  applicableService   String       @default("All") // All, Membership, PT, POS
-  visibilityType      String       @default("Public") // Public, Targeted, Private
-  targetedMemberIds   String?      @db.Text // JSON array of member IDs for Targeted coupons
-  createdAt           DateTime     @default(now())
-  updatedAt           DateTime     @updatedAt
-  tenant              Tenant?      @relation(fields: [tenantId], references: [id])
-  usedBy              UsedCoupon[]
+  id                Int          @id @default(autoincrement())
+  tenantId          Int?
+  code              String       @unique
+  description       String?      @db.Text
+  type              String       @default("Percentage")
+  value             Decimal      @db.Decimal(10, 2)
+  minPurchase       Decimal?     @default(0.00) @db.Decimal(10, 2)
+  maxUses           Int?         @default(0)
+  usedCount         Int          @default(0)
+  startDate         DateTime     @default(now())
+  endDate           DateTime?
+  status            String       @default("Active")
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+  applicableService String       @default("All")
+  maximumDiscount   Decimal?     @db.Decimal(10, 2)
+  targetedMemberIds String?      @db.Text
+  visibilityType    String       @default("Public")
+  tenant            Tenant?      @relation(fields: [tenantId], references: [id])
+  usedBy            UsedCoupon[]
 
   @@index([tenantId], map: "coupon_tenantId_fkey")
   @@map("coupon")
 }
 
 model UsedCoupon {
-  id        Int      @id @default(autoincrement())
-  couponId  Int
-  memberId  Int
-  usedAt    DateTime @default(now())
-  coupon    Coupon   @relation(fields: [couponId], references: [id])
-  member    Member   @relation(fields: [memberId], references: [id])
+  id       Int      @id @default(autoincrement())
+  couponId Int
+  memberId Int
+  usedAt   DateTime @default(now())
+  coupon   Coupon   @relation(fields: [couponId], references: [id])
+  member   Member   @relation(fields: [memberId], references: [id])
 
   @@index([couponId], map: "usedcoupon_couponId_fkey")
   @@index([memberId], map: "usedcoupon_memberId_fkey")
@@ -923,8 +914,8 @@ model StoreCategory {
   status      String         @default("Active")
   createdAt   DateTime       @default(now())
   updatedAt   DateTime       @updatedAt
-  products    StoreProduct[]
   tenant      Tenant?        @relation(fields: [tenantId], references: [id])
+  products    StoreProduct[]
 
   @@index([tenantId], map: "storecategory_tenantId_fkey")
   @@map("store_category")
@@ -947,9 +938,9 @@ model StoreProduct {
   image         String?
   createdAt     DateTime         @default(now())
   updatedAt     DateTime         @updatedAt
+  orderItems    StoreOrderItem[]
   categoryRel   StoreCategory?   @relation(fields: [categoryId], references: [id])
   tenant        Tenant?          @relation(fields: [tenantId], references: [id])
-  orderItems    StoreOrderItem[]
 
   @@index([tenantId], map: "storeproduct_tenantId_fkey")
   @@index([categoryId], map: "storeproduct_categoryId_fkey")
@@ -963,17 +954,17 @@ model StoreOrder {
   total           Decimal          @db.Decimal(10, 2)
   itemsCount      Int              @default(0)
   status          String           @default("Processing")
-  paymentMode     String?          @default("Cash")
-  referenceNumber String?
   date            DateTime         @default(now())
   guestName       String?
   guestPhone      String?
   guestEmail      String?
-  couponCode      String?          // coupon code applied at checkout
-  discountAmount  Decimal?         @default(0.00) @db.Decimal(10, 2) // discount applied
-  items           StoreOrderItem[]
+  couponCode      String?
+  discountAmount  Decimal?         @default(0.00) @db.Decimal(10, 2)
+  paymentMode     String?          @default("Cash")
+  referenceNumber String?
   member          Member?          @relation(fields: [memberId], references: [id])
   tenant          Tenant?          @relation(fields: [tenantId], references: [id])
+  items           StoreOrderItem[]
 
   @@index([tenantId], map: "storeorder_tenantId_fkey")
   @@index([memberId], map: "storeorder_memberId_fkey")
@@ -995,19 +986,74 @@ model StoreOrderItem {
 }
 
 model Amenity {
-  id          Int      @id @default(autoincrement())
+  id          Int              @id @default(autoincrement())
   tenantId    Int
   name        String
-  description String?  @db.Text
-  icon        String?
-  status      String   @default("Active")
-  gender      String   @default("UNISEX")
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  description String?          @db.Text
+  icon        String?          @default("Layers")
+  status      String           @default("Active")
+  gender      String           @default("UNISEX")
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  extraPrice  Decimal          @default(0.00) @db.Decimal(10, 2)
+  slotEnabled Boolean          @default(false)
+  tenant      Tenant           @relation(fields: [tenantId], references: [id])
+  bookings    AmenityBooking[]
+  slots       AmenitySlot[]
+  usages      AmenityUsage[]
 
   @@index([tenantId], map: "amenity_tenantId_fkey")
   @@map("amenity")
+}
+
+model AmenitySlot {
+  id        Int              @id @default(autoincrement())
+  amenityId Int
+  startTime String
+  endTime   String
+  capacity  Int              @default(5)
+  bookings  AmenityBooking[]
+  amenity   Amenity          @relation(fields: [amenityId], references: [id], onDelete: Cascade)
+
+  @@index([amenityId])
+  @@map("amenity_slot")
+}
+
+model AmenityBooking {
+  id            Int          @id @default(autoincrement())
+  memberId      Int
+  amenityId     Int
+  slotId        Int?
+  date          DateTime
+  status        String       @default("Booked")
+  paymentStatus String       @default("None")
+  amount        Decimal      @default(0.00) @db.Decimal(10, 2)
+  transactionId String?
+  createdAt     DateTime     @default(now())
+  amenity       Amenity      @relation(fields: [amenityId], references: [id])
+  member        Member       @relation(fields: [memberId], references: [id])
+  slot          AmenitySlot? @relation(fields: [slotId], references: [id])
+
+  @@index([memberId])
+  @@index([amenityId])
+  @@index([slotId])
+  @@map("amenity_booking")
+}
+
+model AmenityUsage {
+  id        Int     @id @default(autoincrement())
+  memberId  Int
+  amenityId Int
+  month     Int
+  year      Int
+  usedCount Int     @default(0)
+  limit     Int     @default(0)
+  amenity   Amenity @relation(fields: [amenityId], references: [id])
+  member    Member  @relation(fields: [memberId], references: [id])
+
+  @@unique([memberId, amenityId, month, year])
+  @@index([amenityId], map: "amenity_usage_amenityId_fkey")
+  @@map("amenity_usage")
 }
 
 model PTPackage {
@@ -1024,9 +1070,10 @@ model PTPackage {
   status        String            @default("Active")
   createdAt     DateTime          @default(now())
   updatedAt     DateTime          @updatedAt
-  tenant        Tenant            @relation(fields: [tenantId], references: [id])
   accounts      PTMemberAccount[]
+  tenant        Tenant            @relation(fields: [tenantId], references: [id])
 
+  @@index([tenantId], map: "pt_package_tenantId_fkey")
   @@map("pt_package")
 }
 
@@ -1043,8 +1090,8 @@ model PTMemberAccount {
   updatedAt         DateTime    @updatedAt
   member            Member      @relation(fields: [memberId], references: [id])
   package           PTPackage   @relation(fields: [packageId], references: [id])
-  sessions          PTSession[]
   tenant            Tenant      @relation(fields: [tenantId], references: [id])
+  sessions          PTSession[]
 
   @@index([memberId], map: "pt_member_account_memberId_fkey")
   @@index([packageId], map: "pt_member_account_packageId_fkey")
@@ -1066,9 +1113,9 @@ model PTSession {
   createdAt   DateTime         @default(now())
   updatedAt   DateTime         @updatedAt
   member      Member           @relation(fields: [memberId], references: [id])
-  trainer     User             @relation("TrainerSessions", fields: [trainerId], references: [id])
   ptAccount   PTMemberAccount? @relation(fields: [ptAccountId], references: [id])
   tenant      Tenant           @relation(fields: [tenantId], references: [id])
+  trainer     User             @relation("TrainerSessions", fields: [trainerId], references: [id])
 
   @@index([memberId], map: "pt_session_memberId_fkey")
   @@index([trainerId], map: "pt_session_trainerId_fkey")
@@ -1077,28 +1124,18 @@ model PTSession {
   @@map("pt_session")
 }
 
-enum Role {
-  SUPER_ADMIN
-  BRANCH_ADMIN
-  MANAGER
-  STAFF
-  TRAINER
-  MEMBER
-}
-
 model ChatMessage {
   id             Int      @id @default(autoincrement())
   tenantId       Int      @default(1)
   senderId       Int
   receiverId     Int
-  message        String?   @db.LongText
-  attachmentUrl  String?   @db.LongText
-  attachmentType String?   @default("image") // "image", "file", etc.
+  message        String?  @db.LongText
+  attachmentUrl  String?  @db.LongText
+  attachmentType String?  @default("image")
   isRead         Boolean  @default(false)
   createdAt      DateTime @default(now())
-
-  sender   User @relation("SentMessages", fields: [senderId], references: [id])
-  receiver User @relation("ReceivedMessages", fields: [receiverId], references: [id])
+  receiver       User     @relation("ReceivedMessages", fields: [receiverId], references: [id])
+  sender         User     @relation("SentMessages", fields: [senderId], references: [id])
 
   @@index([senderId])
   @@index([receiverId])
@@ -1106,26 +1143,26 @@ model ChatMessage {
 }
 
 model Commission {
-  id             Int      @id @default(autoincrement())
-  tenantId       Int
-  trainerId      Int
-  memberId       Int?
-  invoiceId      Int?
-  ptAccountId    Int?
-  amount         Decimal  @db.Decimal(10, 2)
-  month          Int      // 1-12
-  year           Int
-  status         String   @default("Pending") // Pending, AddedToPayroll, Paid
-  description    String?  @db.Text
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-
-  trainer User    @relation("TrainerCommissions", fields: [trainerId], references: [id])
-  tenant  Tenant  @relation(fields: [tenantId], references: [id])
-  member  Member? @relation(fields: [memberId], references: [id])
+  id          Int      @id @default(autoincrement())
+  tenantId    Int
+  trainerId   Int
+  memberId    Int?
+  invoiceId   Int?
+  ptAccountId Int?
+  amount      Decimal  @db.Decimal(10, 2)
+  month       Int
+  year        Int
+  status      String   @default("Pending")
+  description String?  @db.Text
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  member      Member?  @relation("MemberCommissions", fields: [memberId], references: [id])
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  trainer     User     @relation("TrainerCommissions", fields: [trainerId], references: [id])
 
   @@index([trainerId])
   @@index([tenantId])
+  @@index([memberId], map: "commission_memberId_fkey")
   @@map("commission")
 }
 
@@ -1147,4 +1184,13 @@ model AccessLog {
   @@index([scanTime])
   @@index([deviceKey])
   @@map("access_log")
+}
+
+enum Role {
+  SUPER_ADMIN
+  BRANCH_ADMIN
+  MANAGER
+  STAFF
+  TRAINER
+  MEMBER
 }

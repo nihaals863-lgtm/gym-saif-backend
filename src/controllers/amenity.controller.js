@@ -59,7 +59,8 @@ const getAmenities = async (req, res) => {
         const amenities = await prisma.amenity.findMany({
             where,
             include: {
-                tenant: { select: { name: true } }
+                tenant: { select: { name: true } },
+                slots: true
             },
             orderBy: { name: 'asc' }
         });
@@ -91,9 +92,27 @@ const addAmenity = async (req, res) => {
     try {
         const { tenantId: userTenantId, role, email, name: userName } = req.user;
         const headerTenantId = req.headers['x-tenant-id'];
-        const { name, description, icon, status, gender } = req.body;
+        const { name, description, icon, status, gender, slotEnabled, extraPrice, slots } = req.body;
 
         const isGlobal = !headerTenantId || headerTenantId === 'all' || headerTenantId === 'undefined';
+
+        const createData = (tId) => ({
+            tenantId: tId,
+            name,
+            description,
+            icon,
+            status: status || 'Active',
+            gender: gender || 'UNISEX',
+            slotEnabled: !!slotEnabled,
+            extraPrice: extraPrice ? parseFloat(extraPrice) : 0,
+            slots: slotEnabled && slots && Array.isArray(slots) ? {
+                create: slots.map(s => ({
+                    startTime: s.startTime,
+                    endTime: s.endTime,
+                    capacity: parseInt(s.capacity) || 5
+                }))
+            } : undefined
+        });
 
         if (isGlobal) {
             let managedIds = [];
@@ -121,38 +140,21 @@ const addAmenity = async (req, res) => {
             // Create for all found branches
             const creations = managedIds.map(tId =>
                 prisma.amenity.create({
-                    data: {
-                        tenantId: tId,
-                        name,
-                        description,
-                        icon,
-                        status: status || 'Active',
-                        gender: gender || 'UNISEX'
-                    }
+                    data: createData(tId)
                 })
             );
 
             await Promise.all(creations);
-            console.log(`[addAmenity] Created amenity "${name}" for ${managedIds.length} branches`);
             return res.status(201).json({ message: `Amenity created for ${managedIds.length} branches` });
         }
 
         // Single branch creation
         const targetTenantId = parseInt(headerTenantId);
-
-        if (isNaN(targetTenantId)) {
-            return res.status(400).json({ message: 'Invalid Branch ID' });
-        }
+        if (isNaN(targetTenantId)) return res.status(400).json({ message: 'Invalid Branch ID' });
 
         const amenity = await prisma.amenity.create({
-            data: {
-                tenantId: targetTenantId,
-                name,
-                description,
-                icon,
-                status: status || 'Active',
-                gender: gender || 'UNISEX'
-            }
+            data: createData(targetTenantId),
+            include: { slots: true }
         });
 
         res.status(201).json(amenity);
@@ -168,7 +170,7 @@ const updateAmenity = async (req, res) => {
         const { id } = req.params;
         const { tenantId: userTenantId, role } = req.user;
         const headerTenantId = req.headers['x-tenant-id'];
-        const { name, description, icon, status, gender } = req.body;
+        const { name, description, icon, status, gender, slotEnabled, extraPrice, slots } = req.body;
 
         const where = { id: parseInt(id) };
         if (role !== 'SUPER_ADMIN') {
@@ -176,16 +178,38 @@ const updateAmenity = async (req, res) => {
             where.tenantId = targetTenantId;
         }
 
-        // Check if exists first
         const existing = await prisma.amenity.findFirst({ where });
-        if (!existing) {
-            return res.status(404).json({ message: 'Amenity not found or access denied' });
-        }
+        if (!existing) return res.status(404).json({ message: 'Amenity not found or access denied' });
 
+        // Update basic info
         const amenity = await prisma.amenity.update({
             where: { id: parseInt(id) },
-            data: { name, description, icon, status, gender }
+            data: {
+                name,
+                description,
+                icon,
+                status,
+                gender,
+                slotEnabled: !!slotEnabled,
+                extraPrice: extraPrice ? parseFloat(extraPrice) : 0
+            }
         });
+
+        // Update slots (re-create them for simplicity: delete old and create new)
+        if (slotEnabled && slots && Array.isArray(slots)) {
+            await prisma.amenitySlot.deleteMany({ where: { amenityId: existing.id } });
+            await prisma.amenitySlot.createMany({
+                data: slots.map(s => ({
+                    amenityId: existing.id,
+                    startTime: s.startTime,
+                    endTime: s.endTime,
+                    capacity: parseInt(s.capacity) || 5
+                }))
+            });
+        } else if (!slotEnabled) {
+            // If slotEnabled is turned off, clear any existing slots
+            await prisma.amenitySlot.deleteMany({ where: { amenityId: existing.id } });
+        }
 
         res.json({ message: 'Amenity updated successfully', amenity });
     } catch (error) {

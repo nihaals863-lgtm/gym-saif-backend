@@ -139,7 +139,6 @@ const generatePayroll = async (req, res) => {
                         leaveDays: isNaN(leaveDays) ? 0 : leaveDays,
                         commission: isNaN(commissionAmount) ? 0 : commissionAmount,
                         leaveDeduction,
-                        extra_bonus: 0,
                         amount: finalAmount,
                         year,
                         month,

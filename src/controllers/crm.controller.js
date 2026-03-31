@@ -282,6 +282,10 @@ const updateLeadStatus = async (req, res) => {
                     expiryDate = new Date();
                     if (selectedPlan.durationType === 'Days') {
                         expiryDate.setDate(expiryDate.getDate() + selectedPlan.duration);
+                    } else if (selectedPlan.durationType === 'Weeks') {
+                        expiryDate.setDate(expiryDate.getDate() + (selectedPlan.duration * 7));
+                    } else if (selectedPlan.durationType === 'Years') {
+                        expiryDate.setFullYear(expiryDate.getFullYear() + selectedPlan.duration);
                     } else {
                         expiryDate.setMonth(expiryDate.getMonth() + selectedPlan.duration);
                     }

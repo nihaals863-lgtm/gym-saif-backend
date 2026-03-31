@@ -96,6 +96,7 @@ const getAllMembers = async (req, res) => {
             plan: m.plan?.name || 'No Plan',
             planId: m.planId,
             status: m.status,
+            avatar: m.avatar || null,
             joinDate: m.joinDate ? m.joinDate.toISOString() : null, // Send raw date for frontend processing
             expiryDate: m.expiryDate ? m.expiryDate.toISOString() : null,
             trainer: m.trainer?.name || 'Unassigned',
@@ -114,7 +115,7 @@ const addMember = async (req, res) => {
         const { tenantId: userTenantId, email: userEmail, name: userName } = req.user;
         const {
             name, email, phone, gender, avatar, planId,
-            startDate, duration, branchIds, effectiveBranchId: effB,
+            startDate, duration, branchIds, effectiveBranchId,
             benefits, healthConditions, medicalHistory, fitnessGoal,
             emergencyName, emergencyPhone, dob, source,
             referralCode, idType, idNumber, address,
@@ -136,30 +137,16 @@ const addMember = async (req, res) => {
             }
         }
 
-        // Logic to determine target branches
-        let targetBranchIds = [];
-        const effectiveBranchId = branchId || req.headers['x-tenant-id'];
+        // Logic to determine target branches - Strictly one branch for member creation
+        const headerBranchId = req.headers['x-tenant-id'];
+        let selectedBranchId = branchId || (headerBranchId && headerBranchId !== 'all' ? headerBranchId : userTenantId);
+        
+        // Final fallback to user's home branch if all else fails
+        const targetBranchId = parseInt(selectedBranchId) || userTenantId;
+        const targetBranchIds = [targetBranchId];
 
-        if (effectiveBranchId === 'all') {
-            const branches = await prisma.tenant.findMany({
-                where: {
-                    OR: [
-                        { id: userTenantId || undefined },
-                        { owner: userEmail || undefined },
-                        { owner: userName || undefined }
-                    ].filter(cond => Object.values(cond)[0] !== undefined)
-                },
-                select: { id: true }
-            });
-            targetBranchIds = branches.map(b => b.id);
-        } else if (effectiveBranchId) {
-            targetBranchIds = [parseInt(effectiveBranchId)];
-        } else {
-            targetBranchIds = [userTenantId];
-        }
-
-        if (targetBranchIds.length === 0) {
-            return res.status(400).json({ message: 'No valid branches found' });
+        if (!targetBranchId) {
+            return res.status(400).json({ message: 'A valid branch selection is required' });
         }
 
         const createdMembers = [];
@@ -388,8 +375,11 @@ const addMember = async (req, res) => {
 const getMemberById = async (req, res) => {
     try {
         const { id } = req.params;
+        const parsedId = parseInt(id);
+        if (isNaN(parsedId)) return res.status(400).json({ message: 'Invalid member ID' });
+
         const member = await prisma.member.findUnique({
-            where: { id: parseInt(id) },
+            where: { id: parsedId },
             include: {
                 trainer: true,
                 tenant: true,
@@ -422,13 +412,14 @@ const getMemberById = async (req, res) => {
         const formatted = {
             ...member,
             healthConditions: member.medicalHistory,
-            plan: member.plan?.name || 'No Plan',
+            planName: member.plan?.name || 'No Plan',
             branch: member.tenant?.name || 'Main Branch',
             joinDate: member.joinDate ? member.joinDate.toISOString() : null,
             expiryDate: member.expiryDate ? member.expiryDate.toISOString() : null,
         };
         res.json(formatted);
     } catch (error) {
+        console.error('getMemberById Error:', error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -2165,24 +2156,16 @@ const createPlan = async (req, res) => {
         const planData = req.body;
         const effectiveBranchId = planData.branchId || req.headers['x-tenant-id'] || 'single';
 
-        // Determine target branches
-        let targetBranchIds = [];
-        if (effectiveBranchId === 'all') {
-            const branches = await prisma.tenant.findMany({
-                where: {
-                    OR: [
-                        { id: userTenantId },
-                        { owner: email },
-                        { owner: userName }
-                    ]
-                },
-                select: { id: true }
-            });
-            targetBranchIds = branches.map(b => b.id);
-        } else if (effectiveBranchId !== 'single') {
-            targetBranchIds = [parseInt(effectiveBranchId)];
-        } else {
-            targetBranchIds = [userTenantId];
+        // Logic to determine target branches - Strictly one branch for plan creation
+        const headerBranchId = req.headers['x-tenant-id'];
+        let selectedBranchId = planData.branchId || (headerBranchId && headerBranchId !== 'all' ? headerBranchId : userTenantId);
+        
+        // Final fallback to user's home branch if all else fails
+        const targetBranchId = parseInt(selectedBranchId) || userTenantId;
+        const targetBranchIds = [targetBranchId];
+
+        if (!targetBranchId) {
+            return res.status(400).json({ message: 'A valid branch selection is required' });
         }
 
         if (targetBranchIds.length === 0) {
@@ -2394,62 +2377,36 @@ const createClass = async (req, res) => {
             finalSchedule = { date, time, type };
         }
         const scheduleStr = typeof finalSchedule === 'string' ? finalSchedule : JSON.stringify(finalSchedule);
-
         const finalType = type || req.body.requiredBenefit;
 
-        if ((role === 'SUPER_ADMIN' || role === 'BRANCH_ADMIN' || role === 'MANAGER') && branchId === 'all') {
-            // Find all branches/tenants the user has access to, but let's just create for what they manage.
-            // Simplified: If 'all' is passed, fetch all branches from tenant table
-            let branches = [];
-            if (role === 'SUPER_ADMIN') {
-                branches = await prisma.tenant.findMany();
-            } else {
-                // If branch admin / manager, they might manage multiple branches but for now fallback to their tenantId if they don't have global access
-                branches = [{ id: tenantId }];
-                // Assuming they are selecting 'all' from their accessible branches, ideally we get branches they can see.
-                // In previous implementations if they select 'all' we use the list of accessible tenants.
-                // We will create for their single tenantId as fallback.
-            }
+        // Determine target branch - Strictly one branch for class creation
+        const headerBranchId = req.headers['x-tenant-id'];
+        let selectedBranchId = branchId || (headerBranchId && headerBranchId !== 'all' ? headerBranchId : tenantId);
+        const targetBranchId = parseInt(selectedBranchId) || tenantId;
 
-            if (branches.length > 1) {
-                const classesToCreate = branches.map(branch => ({
-                    tenantId: branch.id,
-                    name,
-                    description,
-                    trainerId: trainerId ? parseInt(trainerId) : null,
-                    schedule: scheduleStr,
-                    maxCapacity: parseInt(maxCapacity),
-                    status: status || 'Scheduled',
-                    duration: duration ? String(duration) : '60',
-                    requiredBenefit: finalType,
-                    type: type === 'Recovery' ? 'Recovery' : 'Workout',
-                    price: price ? parseFloat(price) : null
-                }));
-                await prisma.class.createMany({ data: classesToCreate });
-                return res.status(201).json({ message: 'Classes created for all branches', data: classesToCreate });
-            }
+        if (!targetBranchId) {
+            return res.status(400).json({ message: 'A valid branch selection is required' });
         }
-
-        // Single branch creation
-        const targetTenantId = ((role === 'SUPER_ADMIN' || role === 'BRANCH_ADMIN' || role === 'MANAGER') && branchId && branchId !== 'all') ? parseInt(branchId) : tenantId;
 
         const newClass = await prisma.class.create({
             data: {
-                tenantId: targetTenantId,
+                tenantId: targetBranchId,
                 name,
                 description,
                 trainerId: trainerId ? parseInt(trainerId) : null,
                 schedule: scheduleStr,
-                maxCapacity: parseInt(maxCapacity),
-                status: status || 'Scheduled',
+                maxCapacity: parseInt(maxCapacity) || 0,
                 duration: duration ? String(duration) : '60',
-                requiredBenefit: finalType,
-                type: type === 'Recovery' ? 'Recovery' : 'Workout',
-                price: price ? parseFloat(price) : null
+                status: status || 'Scheduled',
+                price: price ? parseFloat(price) : null,
+                requiredBenefit: finalType || 'Gym Access',
+                type: type === 'Recovery' ? 'Recovery' : 'Workout'
             }
         });
+
         res.status(201).json(newClass);
     } catch (error) {
+        console.error('Create Class Error:', error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -3627,6 +3584,34 @@ const updateServiceRequestStatus = async (req, res) => {
                                 : `[Auto Unfreeze: Approved Service Request]`
                         }
                     });
+                }
+            } else if (requestRecord.type === 'Request Locker') {
+                // Auto-assign an available locker to the member
+                const memberRecord = await prisma.member.findUnique({
+                    where: { id: requestRecord.memberId }
+                });
+
+                if (memberRecord) {
+                    const availableLocker = await prisma.locker.findFirst({
+                        where: {
+                            tenantId: memberRecord.tenantId,
+                            status: 'Available'
+                        },
+                        orderBy: { number: 'asc' }
+                    });
+
+                    if (availableLocker) {
+                        await prisma.locker.update({
+                            where: { id: availableLocker.id },
+                            data: {
+                                status: 'Assigned',
+                                assignedToId: memberRecord.id
+                            }
+                        });
+                        console.log(`[Locker] Auto-assigned locker #${availableLocker.number} to member ${memberRecord.id}`);
+                    } else {
+                        console.log(`[Locker] No available lockers for tenant ${memberRecord.tenantId}`);
+                    }
                 }
             }
         }

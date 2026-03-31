@@ -169,12 +169,24 @@ const getInvoices = async (req, res) => {
             })
         ]);
 
+        const mappedInvoices = invoices.map(inv => ({
+            ...inv,
+            amount: Number(inv.amount),
+            balance: Number(inv.balance),
+            paidAmount: Number(inv.paidAmount),
+            subtotal: Number(inv.subtotal),
+            taxAmount: Number(inv.taxAmount),
+            discount: Number(inv.discount),
+            type: 'Membership'
+        }));
+
         const mappedPOS = storeOrdersFull.map(order => ({
             id: `pos-${order.id}`,
             internalId: order.id,
             type: 'POS Sale',
             invoiceNumber: `POS-#${order.id}`,
-            amount: order.total,
+            amount: Number(order.total),
+            balance: order.status === 'Completed' || order.status === 'Processing' ? 0 : Number(order.total),
             status: order.status === 'Completed' || order.status === 'Processing' ? 'Paid' : 'Unpaid',
             dueDate: order.date,
             paidDate: order.date,
@@ -183,7 +195,7 @@ const getInvoices = async (req, res) => {
             items: order.items.map(i => ({
                 description: i.product?.name || 'Store Product',
                 quantity: i.quantity,
-                rate: i.priceAtBuy,
+                rate: Number(i.priceAtBuy),
                 amount: Number(i.quantity) * Number(i.priceAtBuy)
             })),
             paymentMode: order.paymentMode
@@ -196,7 +208,8 @@ const getInvoices = async (req, res) => {
                 internalId: p.id,
                 type: 'Payroll',
                 invoiceNumber: `PAY-${p.year}-${String(p.month).padStart(2, '0')}-${p.id}`,
-                amount: p.amount,
+                amount: Number(p.amount),
+                balance: p.status === 'Paid' ? 0 : Number(p.amount),
                 status: p.status === 'Approved' || p.status === 'Confirmed' ? 'Unpaid' : (p.status === 'Paid' ? 'Paid' : (p.status === 'Rejected' ? 'Rejected' : 'Pending')),
                 payrollStatus: p.status, // Original status for logic
                 rejectionReason: p.rejectionReason,
@@ -206,14 +219,14 @@ const getInvoices = async (req, res) => {
                 tenant: p.tenant,
                 serviceName: `Salary for ${monthNames[p.month - 1]} ${p.year}`,
                 items: [
-                    { description: 'Base Salary', quantity: 1, rate: p.baseSalary, amount: p.baseSalary },
-                    { description: 'Commission', quantity: 1, rate: p.commission, amount: p.commission },
-                    { description: 'Leave Deduction', quantity: 1, rate: -p.leaveDeduction, amount: -p.leaveDeduction }
+                    { description: 'Base Salary', quantity: 1, rate: Number(p.baseSalary), amount: Number(p.baseSalary) },
+                    { description: 'Commission', quantity: 1, rate: Number(p.commission), amount: Number(p.commission) },
+                    { description: 'Leave Deduction', quantity: 1, rate: -Number(p.leaveDeduction), amount: -Number(p.leaveDeduction) }
                 ]
             };
         });
 
-        const combinedInvoices = [...invoices, ...mappedPOS, ...mappedPayroll].sort((a, b) => {
+        const combinedInvoices = [...mappedInvoices, ...mappedPOS, ...mappedPayroll].sort((a, b) => {
             const dateB = b.createdAt || b.date || b.dueDate;
             const dateA = a.createdAt || a.date || a.dueDate;
             return new Date(dateB) - new Date(dateA);
@@ -224,11 +237,11 @@ const getInvoices = async (req, res) => {
         const uniquePayrollStaffs = new Set(allPayrolls.map(p => p.staffId));
         const combinedClients = new Set([...uniqueInvoicingClients, ...uniqueStoreClients, ...uniquePayrollStaffs]).size;
 
-        const totalPaidInvoices = allInvoices.filter(i => i.status === 'Paid').reduce((acc, i) => acc + Number(i.amount), 0);
+        const totalPaidInvoices = allInvoices.reduce((acc, i) => acc + Number(i.paidAmount || 0), 0);
         const totalPaidStore = allStoreOrders.filter(o => o.status === 'Paid' || o.status === 'Processing' || o.status === 'Completed').reduce((acc, o) => acc + Number(o.total), 0);
         const totalPaidPayroll = allPayrolls.filter(p => p.status === 'Paid').reduce((acc, p) => acc + Number(p.amount), 0);
 
-        const totalUnpaidInvoices = allInvoices.filter(i => i.status !== 'Paid').reduce((acc, i) => acc + Number(i.amount), 0);
+        const totalUnpaidInvoices = allInvoices.reduce((acc, i) => acc + Number(i.balance || 0), 0);
         const totalUnpaidStore = allStoreOrders.filter(o => o.status !== 'Paid' && o.status !== 'Processing' && o.status !== 'Completed').reduce((acc, o) => acc + Number(o.total), 0);
         const totalUnpaidPayroll = allPayrolls.filter(p => ['Approved', 'Confirmed', 'Rejected'].includes(p.status)).reduce((acc, p) => acc + Number(p.amount), 0);
 
@@ -273,6 +286,8 @@ const createInvoice = async (req, res) => {
                 taxAmount,
                 discount: disc,
                 amount: totalAmount,
+                paidAmount: 0,
+                balance: totalAmount,
                 status: status || 'Unpaid',
                 dueDate: new Date(dueDate),
                 notes: notes || null,
@@ -317,6 +332,8 @@ const receivePayment = async (req, res) => {
                 invoiceNumber: `RCPT-${Math.floor(100000 + Math.random() * 900000)}`,
                 memberId: parseInt(memberId),
                 amount: finalAmount,
+                paidAmount: finalAmount,
+                balance: 0,
                 subtotal: baseAmount,
                 paymentMode: method || 'Cash',
                 status: 'Paid',
@@ -496,12 +513,28 @@ const settleInvoice = async (req, res) => {
             ? `${invoice.notes || ''}\n[Payment Ref: ${referenceNumber}]`.trim()
             : invoice.notes;
 
+        // Partial Payment Logic
+        const amountToPayNow = parseFloat(amount) || 0;
+        const newPaidAmount = Number(invoice.paidAmount) + amountToPayNow;
+        const newBalance = Number(invoice.amount) - newPaidAmount;
+        
+        let newStatus = 'Paid';
+        if (newBalance > 0) {
+            newStatus = 'Partially Paid';
+        } else if (newBalance < 0) {
+            // Overpaid case - just mark as Paid (or handle as credit later)
+            newStatus = 'Paid';
+        }
+
         const updatedInvoice = await prisma.invoice.update({
             where: { id: invoiceId },
             data: {
                 paymentMode: method || 'Cash',
-                status: 'Paid',
-                paidDate: date ? new Date(date) : new Date(),
+                status: newStatus,
+                paidAmount: newPaidAmount,
+                balance: Math.max(0, newBalance),
+                paidDate: new Date(date || new Date()),
+                balanceDueDate: req.body.balanceDueDate ? new Date(req.body.balanceDueDate) : invoice.balanceDueDate,
                 notes: updatedNotes
             }
         });

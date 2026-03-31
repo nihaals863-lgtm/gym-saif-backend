@@ -630,11 +630,29 @@ const getMembershipDetails = async (req, res) => {
 
         const daysRemaining = member.expiryDate ? Math.max(0, Math.floor((new Date(member.expiryDate) - new Date()) / (1000 * 60 * 60 * 24))) : 0;
 
+        // Enrich benefits with amenity names if they are stored as IDs
+        let benefits = member.plan?.benefits || '';
+        if (benefits && benefits.startsWith('[')) {
+            try {
+                let parsed = JSON.parse(benefits);
+                if (Array.isArray(parsed) && parsed.length > 0) {
+                    const amenities = await prisma.amenity.findMany({
+                        where: { tenantId: member.tenantId }
+                    });
+                    parsed = parsed.map(b => {
+                        const amenity = amenities.find(a => a.id === b.id);
+                        return { ...b, name: amenity ? amenity.name : (b.name || 'Benefit') };
+                    });
+                    benefits = JSON.stringify(parsed);
+                }
+            } catch (e) { }
+        }
+
         const details = {
             id: member.id,
             planId: member.planId,
             currentPlan: member.plan?.name || 'No Active Plan',
-            benefits: member.plan?.benefits || '',
+            benefits: benefits,
             startDate: member.joinDate ? new Date(member.joinDate).toLocaleDateString() : 'N/A',
             expiryDate: member.expiryDate ? new Date(member.expiryDate).toLocaleDateString() : 'N/A',
             status: member.status,
@@ -1304,7 +1322,7 @@ const getMyReferrals = async (req, res) => {
 
 const getMemberDashboard = async (req, res) => {
     try {
-        const member = await prisma.member.findUnique({
+        let member = await prisma.member.findUnique({
             where: { userId: req.user.id },
             include: {
                 plan: true,
@@ -1326,21 +1344,75 @@ const getMemberDashboard = async (req, res) => {
                     take: 1
                 },
                 invoices: {
-                    where: { status: { not: 'Paid' } }
+                    orderBy: { createdAt: 'desc' }
                 }
             }
         });
 
+        // Smart Linking: If member not found by userId, try finding by email and link it
+        if (!member && req.user.email) {
+            const memberByEmail = await prisma.member.findFirst({
+                where: { 
+                    email: req.user.email,
+                    userId: null // Only link if not already linked to someone else
+                },
+                include: {
+                    plan: true,
+                    tenant: true,
+                    trainer: true,
+                    lockers: true,
+                    attendances: { orderBy: { date: 'desc' }, take: 5 },
+                    bookings: {
+                        where: { status: 'Upcoming' },
+                        include: { class: { include: { trainer: true } } },
+                        orderBy: { date: 'asc' },
+                        take: 1
+                    },
+                    invoices: { orderBy: { createdAt: 'desc' } }
+                }
+            });
+
+            if (memberByEmail) {
+                // Perform the link
+                await prisma.member.update({
+                    where: { id: memberByEmail.id },
+                    data: { userId: req.user.id }
+                });
+                member = memberByEmail;
+                console.log(`[Dashboard] Smart-linked member ${member.id} to user ${req.user.id} by email`);
+            }
+        }
+
         if (!member) {
             // Return a default empty dashboard instead of 404 to keep UI stable
             return res.json({
-                memberInfo: { name: req.user.name, status: 'No Profile' },
-                membership: { planName: 'None', daysRemaining: 0 },
-                stats: { ptSessionsRemaining: 0, visitsThisMonth: 0, pendingDues: 0 },
+                memberInfo: { 
+                    name: req.user.name, 
+                    memberId: 'PENDING',
+                    branchName: 'Main Branch',
+                    status: 'Pending Registration' 
+                },
+                membership: { 
+                    planName: 'No Active Plan', 
+                    daysRemaining: 0,
+                    benefits: '',
+                    startDate: null,
+                    expiryDate: null
+                },
+                stats: { 
+                    ptSessionsRemaining: 0, 
+                    visitsThisMonth: 0, 
+                    pendingDues: 0,
+                    totalPaid: 0,
+                    nextDueDate: null,
+                    activeInvoices: 0 
+                },
                 recentAttendance: [],
                 upcomingClass: null,
                 announcements: [],
-                notifications: []
+                notifications: [],
+                trainer: null,
+                locker: null
             });
         }
 
@@ -1367,11 +1439,46 @@ const getMemberDashboard = async (req, res) => {
         });
         const ptSessionsRemaining = ptAccountStats._sum.remainingSessions || 0;
 
-        // Calculate pending dues
-        const pendingDues = member.invoices.reduce((sum, inv) => sum + parseFloat(inv.amount || 0), 0);
+        // Calculate detailed financial stats
+        let pendingDues = 0;
+        let totalPaid = 0;
+        let nextDueDate = null;
 
-        // Benefits
-        const benefits = member.plan?.benefits || "";
+        member.invoices.forEach(inv => {
+            const bal = parseFloat(inv.balance || 0);
+            const paid = parseFloat(inv.paidAmount || 0);
+            
+            pendingDues += bal;
+            totalPaid += paid;
+
+            // Find earliest upcoming balance due date
+            if (inv.balanceDueDate && (inv.status === 'Unpaid' || inv.status === 'Partially Paid')) {
+                const dueDate = new Date(inv.balanceDueDate);
+                if (dueDate >= new Date()) {
+                    if (!nextDueDate || dueDate < nextDueDate) {
+                        nextDueDate = dueDate;
+                    }
+                }
+            }
+        });
+
+        // Benefits enrichment
+        let benefits = member.plan?.benefits || "";
+        if (benefits && benefits.startsWith('[')) {
+            try {
+                let parsed = JSON.parse(benefits);
+                if (Array.isArray(parsed) && parsed.length > 0) {
+                    const amenities = await prisma.amenity.findMany({
+                        where: { tenantId: member.tenantId }
+                    });
+                    parsed = parsed.map(b => {
+                        const amenity = amenities.find(a => a.id === b.id);
+                        return { ...b, name: amenity ? amenity.name : (b.name || 'Benefit') };
+                    });
+                    benefits = JSON.stringify(parsed);
+                }
+            } catch (e) { }
+        }
 
         const dashboardData = {
             memberInfo: {
@@ -1392,7 +1499,9 @@ const getMemberDashboard = async (req, res) => {
                 ptSessionsRemaining,
                 visitsThisMonth,
                 pendingDues,
-                activeInvoices: member.invoices.length
+                totalPaid,
+                nextDueDate,
+                activeInvoices: member.invoices.filter(i => i.status !== 'Paid').length
             },
             recentAttendance: member.attendances.map(a => ({
                 id: a.id,

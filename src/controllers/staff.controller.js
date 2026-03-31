@@ -151,10 +151,30 @@ const getMemberById = async (req, res) => {
     try {
         const { id } = req.params;
         const member = await prisma.member.findUnique({
-            where: { id: parseInt(id) }
+            where: { id: parseInt(id) },
+            include: {
+                trainer: true,
+                tenant: true,
+                plan: true,
+                invoices: {
+                    orderBy: {
+                        createdAt: 'desc'
+                    }
+                }
+            }
         });
         if (!member) return res.status(404).json({ message: 'Member not found' });
-        res.json(member);
+        
+        // Formatting for frontend consistency
+        const formatted = {
+            ...member,
+            healthConditions: member.medicalHistory,
+            planName: member.plan?.name || 'No Plan',
+            branch: member.tenant?.name || 'Main Branch',
+            joinDate: member.joinDate ? member.joinDate.toISOString() : null,
+            expiryDate: member.expiryDate ? member.expiryDate.toISOString() : null,
+        };
+        res.json(formatted);
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
