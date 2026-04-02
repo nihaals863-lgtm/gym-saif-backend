@@ -75,6 +75,10 @@ const login = async (req, res) => {
             }
         });
 
+        const tenantSettings = user.tenantId
+            ? await prisma.tenantSettings.findUnique({ where: { tenantId: user.tenantId } })
+            : null;
+
         res.json({
             id: user.id,
             name: user.name,
@@ -82,6 +86,8 @@ const login = async (req, res) => {
             role: user.role,
             tenantId: user.tenantId,
             branchName: user.tenant?.branchName,
+            tenantName: user.tenant?.name,
+            logo: tenantSettings?.logo || null,
             token
         });
     } catch (error) {
@@ -98,6 +104,10 @@ const getMe = async (req, res) => {
     try {
         const user = req.user;
         let memberData = {};
+
+        const tenantSettings = user.tenantId
+            ? await prisma.tenantSettings.findUnique({ where: { tenantId: user.tenantId } })
+            : null;
 
         if (user.role === 'MEMBER') {
             const member = await prisma.member.findUnique({
@@ -167,6 +177,8 @@ const getMe = async (req, res) => {
             status: user.status || 'Active',
             tenantId: user.tenantId,
             branchName: user.tenant?.branchName,
+            tenantName: user.tenant?.name,
+            logo: tenantSettings?.logo || null,
             joinedDate: new Date(user.joinedDate).toLocaleDateString('en-US', {
                 month: 'short',
                 year: 'numeric'

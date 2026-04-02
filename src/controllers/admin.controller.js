@@ -393,7 +393,7 @@ const getMemberById = async (req, res) => {
                         }
                     },
                     orderBy: {
-                        createdAt: 'desc'
+                        date: 'desc'
                     }
                 },
                 invoices: {
@@ -471,6 +471,12 @@ const updateMember = async (req, res) => {
             }
         }
 
+        // Fetch current member to detect plan change
+        const currentMember = await prisma.member.findUnique({
+            where: { id: parseInt(id) },
+            select: { planId: true, tenantId: true }
+        });
+
         if (planId) updateData.planId = parseInt(planId);
         if (startDate) updateData.joinDate = new Date(startDate);
 
@@ -490,6 +496,30 @@ const updateMember = async (req, res) => {
             where: { id: parseInt(id) },
             data: updateData
         });
+
+        // Create invoice if plan was newly assigned or changed
+        const newPlanId = planId ? parseInt(planId) : null;
+        if (newPlanId && newPlanId !== currentMember?.planId) {
+            const planObj = await prisma.membershipPlan.findUnique({
+                where: { id: newPlanId }
+            });
+            if (planObj) {
+                const memberTenantId = updated.tenantId || currentMember?.tenantId;
+                await prisma.invoice.create({
+                    data: {
+                        tenantId: memberTenantId,
+                        invoiceNumber: `INV-${Date.now()}-${memberTenantId}`,
+                        memberId: updated.id,
+                        amount: parseFloat(planObj.price),
+                        subtotal: parseFloat(planObj.price),
+                        paymentMode: 'Cash',
+                        status: 'Unpaid',
+                        dueDate: new Date(),
+                        notes: `Membership Plan: ${planObj.name}`
+                    }
+                });
+            }
+        }
 
         // --- MIPS SYNC (non-blocking) ---
         setImmediate(async () => {
@@ -603,6 +633,11 @@ const deleteMember = async (req, res) => {
 
             // 10. Finally delete the Member
             await tx.member.delete({ where: { id: memberId } });
+
+            // 11. Delete linked User account so they cannot login anymore
+            if (member.userId) {
+                await tx.user.delete({ where: { id: member.userId } }).catch(() => { });
+            }
         });
 
         res.json({ message: 'Member deleted successfully' });
@@ -1038,7 +1073,10 @@ const getBookings = async (req, res) => {
             where,
             include: {
                 member: {
-                    include: { trainer: true }
+                    include: {
+                        trainer: true,
+                        plan: true
+                    }
                 },
                 class: {
                     include: { trainer: true }

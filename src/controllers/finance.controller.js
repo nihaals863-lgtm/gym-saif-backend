@@ -120,6 +120,8 @@ const getInvoices = async (req, res) => {
             storeWhere.status = 'Completed';
         } else if (statusFilter === 'Unpaid') {
             storeWhere.status = 'Processing';
+        } else if (statusFilter === 'Partially Paid') {
+            storeWhere.id = -1; // exclude all store orders for partial filter
         }
 
         // Handle Payrolls
@@ -132,6 +134,8 @@ const getInvoices = async (req, res) => {
             payrollWhere.status = 'Paid';
         } else if (statusFilter === 'Unpaid') {
             payrollWhere.status = { in: ['Approved', 'Confirmed', 'Rejected'] };
+        } else if (statusFilter === 'Partially Paid') {
+            payrollWhere.id = -1; // exclude all payrolls for partial filter
         } else {
             payrollWhere.status = { in: ['Approved', 'Confirmed', 'Rejected', 'Paid'] };
         }
@@ -144,7 +148,7 @@ const getInvoices = async (req, res) => {
             }),
             prisma.invoice.findMany({
                 where: branchWhere,
-                select: { id: true, amount: true, status: true, memberId: true }
+                select: { id: true, amount: true, paidAmount: true, balance: true, status: true, memberId: true }
             }),
             prisma.storeOrder.findMany({
                 where: storeWhere,
