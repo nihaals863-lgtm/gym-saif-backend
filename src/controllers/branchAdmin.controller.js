@@ -33,8 +33,20 @@ const getDashboardStats = async (req, res) => {
             prisma.member.count({ where: whereClause }),
             // 2. Active Trainers
             prisma.user.count({ where: { ...whereClause, role: 'TRAINER', status: 'Active' } }),
-            // 3. Today's Check-ins
-            prisma.attendance.count({ where: { ...whereClause, checkIn: { gte: startOfDay } } }),
+            // 3. Today's Check-ins (Manual + Hardware)
+            prisma.attendance.count({ where: { ...whereClause, checkIn: { gte: startOfDay } } }).then(async (manual) => {
+                const activeBranchId = (whereClause.tenantId || req.user.tenantId);
+                const hardware = await prisma.accessLog.count({
+                    where: {
+                        OR: [
+                            { branchId: parseInt(activeBranchId) },
+                            { personTenantId: parseInt(activeBranchId) }
+                        ],
+                        scanTime: { gte: startOfDay, lt: endOfDay }
+                    }
+                });
+                return manual + hardware;
+            }),
             // 4. Monthly Revenue (Invoices)
             prisma.invoice.aggregate({ where: { ...whereClause, status: 'Paid', paidDate: { gte: startOfMonth } }, _sum: { amount: true } }),
             // 4. Monthly Revenue (Store)
@@ -291,7 +303,7 @@ const getRecentActivities = async (req, res) => {
     try {
         const whereClause = getWhereClause(req, 'user');
 
-        // Fetch recent check-ins
+        // Fetch manual check-ins
         const recentCheckIns = await prisma.attendance.findMany({
             where: whereClause,
             take: 5,
@@ -299,12 +311,39 @@ const getRecentActivities = async (req, res) => {
             include: { user: { select: { name: true } } }
         });
 
-        const activities = recentCheckIns.map((checkIn, index) => ({
-            id: index + 1,
+        // Fetch hardware logs
+        const activeBranchId = (whereClause.user?.tenantId || req.user.tenantId);
+        const recentHardwareLogs = await prisma.accessLog.findMany({
+            where: {
+                OR: [
+                    { branchId: parseInt(activeBranchId) },
+                    { personTenantId: parseInt(activeBranchId) }
+                ]
+            },
+            take: 5,
+            orderBy: { scanTime: 'desc' }
+        });
+
+        // Merge and sort
+        const manualActivities = recentCheckIns.map(checkIn => ({
+            id: `at-${checkIn.id}`,
             member: checkIn.user.name,
-            action: 'Check-in',
-            time: new Date(checkIn.checkIn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+            action: 'Manual Check-in',
+            time: new Date(checkIn.checkIn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            timestamp: new Date(checkIn.checkIn).getTime()
         }));
+
+        const hardwareActivities = recentHardwareLogs.map(log => ({
+            id: `hw-${log.id}`,
+            member: log.personName || 'Stranger',
+            action: `Face Scan (${log.deviceName || 'AIoT'})`,
+            time: new Date(log.scanTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            timestamp: new Date(log.scanTime).getTime()
+        }));
+
+        const activities = [...manualActivities, ...hardwareActivities]
+            .sort((a, b) => b.timestamp - a.timestamp)
+            .slice(0, 5);
 
         res.json(activities);
 
@@ -1042,43 +1081,94 @@ const getBookingReport = async (req, res) => {
 // Get Live Access Control — today's check-ins with membership/dues status
 const getLiveAccess = async (req, res) => {
     try {
-        const tenantId = req.user.tenantId;
+        const whereClause = getWhereClause(req);
         const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0);
         const endOfDay = new Date(); endOfDay.setHours(23, 59, 59, 999);
 
-        // Fetch today's attendance records for this tenant
-        const records = await prisma.attendance.findMany({
-            where: { ...whereClause, date: { gte: startOfDay, lte: endOfDay } },
+        // Fetch manual records
+        const manualRecords = await prisma.attendance.findMany({
+            where: { ...whereClause, checkIn: { gte: startOfDay, lte: endOfDay } },
             include: { user: { select: { id: true, name: true, role: true } } },
             orderBy: { checkIn: 'desc' },
-            take: 50
+            take: 25
         });
 
-        const checkins = await Promise.all(records.map(async (r) => {
-            // Try to find member record to get expiry + dues
+        // Fetch hardware logs
+        const activeBranchId = (whereClause.tenantId || req.user.tenantId);
+        const hardwareLogs = await prisma.accessLog.findMany({
+            where: {
+                OR: [
+                    { branchId: parseInt(activeBranchId) },
+                    { personTenantId: parseInt(activeBranchId) }
+                ],
+                scanTime: { gte: startOfDay, lte: endOfDay }
+            },
+            orderBy: { scanTime: 'desc' },
+            take: 25
+        });
+
+        // Enrich manual records
+        const manualEnriched = await Promise.all(manualRecords.map(async (r) => {
             const member = await prisma.member.findFirst({
-                where: { userId: r.userId, ...whereClause },
+                where: { userId: r.userId, tenantId: r.tenantId },
                 include: { plan: { select: { name: true } } }
             });
 
-            // Get outstanding dues (unpaid invoices)
             const dues = await prisma.invoice.aggregate({
                 where: { memberId: member?.id, status: { in: ['Unpaid', 'Partial'] } },
                 _sum: { amount: true }
             });
 
             return {
-                id: r.id,
+                id: `at-${r.id}`,
                 member: r.user?.name || 'Unknown',
                 plan: member?.plan?.name || r.user?.role || 'Staff',
                 time: r.checkIn ? r.checkIn.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '-',
                 expiry: member?.expiryDate ? member.expiryDate.toISOString().split('T')[0] : null,
                 balance: parseFloat(dues._sum.amount || 0),
-                photo: `https://ui-avatars.com/api/?name=${encodeURIComponent(r.user?.name || 'U')}&background=6d28d9&color=fff&size=48`
+                photo: `https://ui-avatars.com/api/?name=${encodeURIComponent(r.user?.name || 'U')}&background=6d28d9&color=fff&size=48`,
+                timestamp: new Date(r.checkIn).getTime()
             };
         }));
 
-        res.json(checkins);
+        // Enrich hardware records
+        const hardwareEnriched = await Promise.all(hardwareLogs.map(async (l) => {
+            // Try to find member by personId (biometric key)
+            // We search by personTenantId and personId (which is usually the member's unique code or ID)
+            const member = await prisma.member.findFirst({
+                where: { 
+                    tenantId: l.personTenantId || whereClause.tenantId,
+                    OR: [
+                        { id: parseInt(l.personId) || -1 },
+                        { uniqueCode: l.personId },
+                        { memberId: l.personId }
+                    ]
+                },
+                include: { plan: { select: { name: true } } }
+            });
+
+            const dues = member ? await prisma.invoice.aggregate({
+                where: { memberId: member.id, status: { in: ['Unpaid', 'Partial'] } },
+                _sum: { amount: true }
+            }) : { _sum: { amount: 0 } };
+
+            return {
+                id: `hw-${l.id}`,
+                member: l.personName || 'Stranger',
+                plan: member?.plan?.name ? `Face: ${member.plan.name}` : `Face: ${l.deviceName || 'AIoT'}`,
+                time: l.scanTime ? l.scanTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '-',
+                expiry: member?.expiryDate ? member.expiryDate.toISOString().split('T')[0] : null,
+                balance: parseFloat(dues._sum.amount || 0),
+                photo: l.imageUrl || `https://ui-avatars.com/api/?name=${encodeURIComponent(l.personName || 'S')}&background=f43f5e&color=fff&size=48`,
+                timestamp: new Date(l.scanTime).getTime()
+            };
+        }));
+
+        const combined = [...manualEnriched, ...hardwareEnriched]
+            .sort((a, b) => b.timestamp - a.timestamp)
+            .slice(0, 50);
+
+        res.json(combined);
     } catch (error) {
         console.error('Live Access Error:', error);
         res.status(500).json({ message: error.message });

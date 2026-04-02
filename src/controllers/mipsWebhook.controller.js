@@ -50,7 +50,7 @@ const normalizeScanTime = (raw) => {
 const findPerson = async (personId, branchId) => {
     const branchFilter = branchId ? { tenantId: branchId } : {};
 
-    // ── Tier 1 & 2: Member lookup ─────────────────────────────
+    // ── Tier 1: Member lookup (Branch restricted first) ─────────────────────────────
     let member = await prisma.member.findFirst({
         where: {
             ...branchFilter,
@@ -61,33 +61,58 @@ const findPerson = async (personId, branchId) => {
         }
     });
 
+    // Fallback: Global Member lookup
+    if (!member && branchId) {
+        member = await prisma.member.findFirst({
+            where: {
+                OR: [
+                    { mipsPersonSn: personId },
+                    { mipsPersonId: personId }
+                ]
+            }
+        });
+    }
+
     if (!member) {
         // Tier 3: code normalization for members (MAIN00001 → MAIN-00001)
         const withHyphen = personId.replace(/([A-Z]+)(\d+)/, '$1-$2');
         member = await prisma.member.findFirst({
-            where: { ...branchFilter, memberId: withHyphen }
+            where: { memberId: withHyphen }
         });
     }
 
     if (member) return { type: 'MEMBER', id: member.id, userId: member.userId, tenantId: member.tenantId };
 
     // ── Staff / Employee lookup ───────────────────────────────
-    const staffUser = await prisma.user.findFirst({
+    let staffUser = await prisma.user.findFirst({
         where: {
             ...(branchId ? { tenantId: branchId } : {}),
             role: { in: ['STAFF', 'MANAGER', 'BRANCH_ADMIN', 'SUPER_ADMIN'] },
             OR: [
                 { mipsPersonSn: personId },
                 { mipsPersonId: personId },
-                { employeeCode: personId.replace(/^EMP/, 'EMP-') } // EMPABC → EMP-ABC
+                { employeeCode: personId.replace(/^EMP/, 'EMP-') } 
             ]
         }
     });
 
+    // Fallback: Global Staff lookup
+    if (!staffUser && branchId) {
+        staffUser = await prisma.user.findFirst({
+            where: {
+                role: { in: ['STAFF', 'MANAGER', 'BRANCH_ADMIN', 'SUPER_ADMIN'] },
+                OR: [
+                    { mipsPersonSn: personId },
+                    { mipsPersonId: personId }
+                ]
+            }
+        });
+    }
+
     if (staffUser) return { type: 'EMPLOYEE', id: staffUser.id, userId: staffUser.id, tenantId: staffUser.tenantId };
 
     // ── Trainer lookup ────────────────────────────────────────
-    const trainer = await prisma.user.findFirst({
+    let trainer = await prisma.user.findFirst({
         where: {
             ...(branchId ? { tenantId: branchId } : {}),
             role: 'TRAINER',
@@ -97,6 +122,19 @@ const findPerson = async (personId, branchId) => {
             ]
         }
     });
+
+    // Fallback: Global Trainer lookup
+    if (!trainer && branchId) {
+        trainer = await prisma.user.findFirst({
+            where: {
+                role: 'TRAINER',
+                OR: [
+                    { mipsPersonSn: personId },
+                    { mipsPersonId: personId }
+                ]
+            }
+        });
+    }
 
     if (trainer) return { type: 'TRAINER', id: trainer.id, userId: trainer.id, tenantId: trainer.tenantId };
 
@@ -200,7 +238,8 @@ const handleMipsWebhook = async (req, res) => {
         const payload = req.body;
         console.log('[MipsWebhook] Received payload:', JSON.stringify(payload).slice(0, 300));
 
-        const { personId, personName, type: passType, time, deviceKey, deviceName } = payload;
+        const { personId, personName, type: passType, time, deviceKey, deviceName, checkImgUri, picUrl } = payload;
+        const imageUrl = checkImgUri || picUrl || null;
 
         // ── Step 1: Normalize timestamp ───────────────────────
         const scanTime = normalizeScanTime(time);
@@ -230,6 +269,7 @@ const handleMipsWebhook = async (req, res) => {
                     passType: passType || 'face_2',
                     scanTime,
                     branchId,
+                    imageUrl,
                     status: 'DENIED_STRANGER'
                 }
             }).catch(e => console.error('[MipsWebhook] AccessLog insert failed:', e.message));
@@ -241,15 +281,16 @@ const handleMipsWebhook = async (req, res) => {
 
         let attendanceResult = 'UNKNOWN';
 
-        if (person) {
-            // ── Step 5: Route attendance by type ─────────────
-            if (person.type === 'MEMBER') {
-                attendanceResult = await processMemberAttendance(person.id, branchId, scanTime);
-            } else if (person.type === 'EMPLOYEE' || person.type === 'TRAINER') {
-                attendanceResult = await processStaffAttendance(person.userId, branchId, scanTime);
-            }
-        } else {
-            console.log(`[MipsWebhook] Person not found for personId: ${personId}`);
+        if (!person) {
+            console.log(`[MipsWebhook] Person not found (External Gym User?): ${personName} (${personId}). Skipping record.`);
+            return; // EXIT HERE: We don't record scans for people not in our system
+        }
+
+        // ── Step 5: Route attendance by type ─────────────
+        if (person.type === 'MEMBER') {
+            attendanceResult = await processMemberAttendance(person.id, branchId, scanTime);
+        } else if (person.type === 'EMPLOYEE' || person.type === 'TRAINER') {
+            attendanceResult = await processStaffAttendance(person.userId, branchId, scanTime);
         }
 
         // ── Step 6: Save access log with branchId ─────────────
@@ -262,6 +303,8 @@ const handleMipsWebhook = async (req, res) => {
                 passType: passType || 'face_0',
                 scanTime,
                 branchId,
+                imageUrl,
+                personTenantId: person?.tenantId || null,
                 personType: person?.type || 'VISITOR',
                 attendanceResult,
                 status: attendanceResult.includes('DENIED') ? 'DENIED' : 'ALLOWED'

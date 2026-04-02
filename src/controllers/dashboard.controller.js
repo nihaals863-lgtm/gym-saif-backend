@@ -124,8 +124,7 @@ exports.getManagerDashboard = async (req, res) => {
 
         // Sort tasks globally by urgency
         tasksAndNotices.sort((a, b) => a.type === 'urgent' ? -1 : 1);
-
-        const [todayInvoices, overdueInvoices, expenses, equipmentList] = await Promise.all([
+        const results = await Promise.all([
             prisma.invoice.findMany({
                 where: { tenantId, paidDate: { gte: today, lt: tomorrow } }
             }),
@@ -137,8 +136,28 @@ exports.getManagerDashboard = async (req, res) => {
             }).catch(() => []),
             prisma.equipment.findMany({
                 where: { tenantId }
-            }).catch(() => [])
+            }).catch(() => []),
+            // Today's Attendance logs (Manual + Hardware)
+            prisma.attendance.findMany({
+                where: { tenantId, checkIn: { gte: today, lt: tomorrow } },
+                take: 5,
+                orderBy: { checkIn: 'desc' },
+                include: { user: { select: { name: true } } }
+            }),
+            prisma.accessLog.findMany({
+                where: {
+                    OR: [
+                        { branchId: tenantId },
+                        { personTenantId: tenantId }
+                    ],
+                    scanTime: { gte: today, lt: tomorrow }
+                },
+                take: 5,
+                orderBy: { scanTime: 'desc' }
+            })
         ]);
+
+        const [todayInvoices, overdueInvoices, expenses, equipmentList, manualAttendance, hardwareLogs] = results;
 
         const collectionToday = todayInvoices.reduce((sum, inv) => sum + Number(inv.amount), 0);
         
@@ -155,6 +174,26 @@ exports.getManagerDashboard = async (req, res) => {
         const outOfOrder = equipmentList.filter(eq => eq.status === 'Maintenance' || eq.status === 'Broken').length;
         const operational = totalAssets - outOfOrder;
 
+        const manualFormatted = manualAttendance.map(a => ({
+            id: `at-${a.id}`,
+            member: a.user?.name || 'Unknown',
+            action: 'Manual Check-in',
+            time: new Date(a.checkIn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            timestamp: new Date(a.checkIn).getTime()
+        }));
+
+        const hardwareFormatted = hardwareLogs.map(l => ({
+            id: `hw-${l.id}`,
+            member: l.personName || 'Stranger',
+            action: `Face Scan (${l.deviceName || 'AIoT'})`,
+            time: new Date(l.scanTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            timestamp: new Date(l.scanTime).getTime()
+        }));
+
+        const recentActivities = [...manualFormatted, ...hardwareFormatted]
+            .sort((a, b) => b.timestamp - a.timestamp)
+            .slice(0, 5);
+
         res.json({
             activeMembers,
             classesToday,
@@ -169,7 +208,8 @@ exports.getManagerDashboard = async (req, res) => {
                 outOfOrder
             },
             tasksAndNotices,
-            taskStats
+            taskStats,
+            recentActivities
         });
     } catch (error) {
         console.error('Manager Dashboard Error:', error);
@@ -198,6 +238,17 @@ exports.getStaffDashboard = async (req, res) => {
         ] = await Promise.all([
             prisma.attendance.count({
                 where: { tenantId, date: { gte: today, lt: tomorrow } }
+            }).then(async (m) => {
+                const h = await prisma.accessLog.count({
+                    where: {
+                        OR: [
+                            { branchId: tenantId },
+                            { personTenantId: tenantId }
+                        ],
+                        scanTime: { gte: today, lt: tomorrow }
+                    }
+                });
+                return m + h;
             }),
             prisma.lead.count({
                 where: { tenantId, status: 'New', createdAt: { gte: today, lt: tomorrow } }
@@ -283,32 +334,56 @@ exports.getStaffDashboard = async (req, res) => {
         // Let's get actual staff shift or random default
         const todayShift = '09:00 - 17:00';
 
-        const checkinRecords = await prisma.attendance.findMany({
-            where: { tenantId, date: { gte: today } },
-            take: 10,
-            orderBy: { date: 'desc' },
-            include: { user: true }
-        });
+        const [manualCheckins, hardwareLogs] = await Promise.all([
+            prisma.attendance.findMany({
+                where: { tenantId, date: { gte: today } },
+                take: 10,
+                orderBy: { date: 'desc' },
+                include: { user: true }
+            }),
+            prisma.accessLog.findMany({
+                where: {
+                    OR: [
+                        { branchId: tenantId },
+                        { personTenantId: tenantId }
+                    ],
+                    scanTime: { gte: today }
+                },
+                take: 10,
+                orderBy: { scanTime: 'desc' }
+            })
+        ]);
 
-        const memberUserIds = checkinRecords.map(c => c.userId).filter(id => id);
+        const memberUserIds = manualCheckins.map(c => c.userId).filter(id => id);
         const members = await prisma.member.findMany({
             where: { userId: { in: memberUserIds } },
             include: { plan: true }
         });
 
-        const formattedCheckins = checkinRecords.map((c, i) => {
-            const memberProfile = members.find(m => m.userId === c.userId);
+        const manualFormatted = manualCheckins.map(c => {
+            const m = members.find(mem => mem.userId === c.userId);
             return {
-                id: c.id,
-                member: memberProfile?.name || c.user?.name || 'Unknown User',
-                plan: memberProfile?.plan?.name || 'Walk-in / No Plan',
-                expiry: memberProfile?.expiryDate ? new Date(memberProfile.expiryDate).toLocaleDateString() : 'N/A',
-                balance: memberProfile?.wallet?.balance ? Number(memberProfile.wallet.balance) : 0,
-                time: new Date(c.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                id: `at-${c.id}`,
+                member: m?.name || c.user?.name || 'Unknown',
+                plan: m?.plan?.name || 'Manual Check-in',
                 status: 'Allowed',
-                photo: c.user?.avatar || `https://i.pravatar.cc/150?u=${c.userId}`
+                time: new Date(c.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                timestamp: new Date(c.date).getTime()
             };
         });
+
+        const hardwareFormatted = hardwareLogs.map(l => ({
+            id: `hw-${l.id}`,
+            member: l.personName || 'Stranger',
+            plan: `Face Scan (${l.deviceName || 'AIoT'})`,
+            status: l.status || 'Allowed',
+            time: new Date(l.scanTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            timestamp: new Date(l.scanTime).getTime()
+        }));
+
+        const formattedCheckins = [...manualFormatted, ...hardwareFormatted]
+            .sort((a, b) => b.timestamp - a.timestamp)
+            .slice(0, 10);
 
         const thirtyDaysFromNow = new Date(today);
         thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30);

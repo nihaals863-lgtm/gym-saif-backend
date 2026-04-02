@@ -590,54 +590,57 @@ const deleteMember = async (req, res) => {
 
         await prisma.$transaction(async (tx) => {
             // 1. Delete Service Requests
-            await tx.serviceRequest.deleteMany({ where: { memberId } }).catch(() => { });
+            await tx.serviceRequest.deleteMany({ where: { memberId } });
 
             // 2. Delete Bookings
-            await tx.booking.deleteMany({ where: { memberId } }).catch(() => { });
+            await tx.booking.deleteMany({ where: { memberId } });
 
             // 3. Delete Invoice Items first, then Invoices
             const invoices = await tx.invoice.findMany({ where: { memberId }, select: { id: true } });
             if (invoices.length > 0) {
                 const invoiceIds = invoices.map(inv => inv.id);
-                await tx.invoiceItem.deleteMany({ where: { invoiceId: { in: invoiceIds } } }).catch(() => { });
+                await tx.invoiceItem.deleteMany({ where: { invoiceId: { in: invoiceIds } } });
             }
-            await tx.invoice.deleteMany({ where: { memberId } }).catch(() => { });
+            await tx.invoice.deleteMany({ where: { memberId } });
 
             // 4. Delete Attendance records
-            await tx.attendance.deleteMany({ where: { memberId } }).catch(() => { });
+            await tx.attendance.deleteMany({ where: { memberId } });
 
             // 5. Delete Wallet Transactions, then Wallet
-            const wallet = await tx.wallet.findFirst({ where: { memberId } }).catch(() => null);
+            const wallet = await tx.wallet.findFirst({ where: { memberId } });
             if (wallet) {
-                await tx.transaction.deleteMany({ where: { walletId: wallet.id } }).catch(() => { });
-                await tx.wallet.delete({ where: { id: wallet.id } }).catch(() => { });
+                await tx.transaction.deleteMany({ where: { walletId: wallet.id } });
+                await tx.wallet.delete({ where: { id: wallet.id } });
             }
 
             // 6. Delete Member Progress
-            await tx.memberProgress.deleteMany({ where: { memberId } }).catch(() => { });
+            await tx.memberProgress.deleteMany({ where: { memberId } });
 
             // 7. Delete Feedback
-            await tx.feedback.deleteMany({ where: { memberId } }).catch(() => { });
+            await tx.feedback.deleteMany({ where: { memberId } });
 
             // 8. Delete Store Order Items first, then Store Orders
             const storeOrders = await tx.storeOrder.findMany({ where: { memberId }, select: { id: true } });
             if (storeOrders.length > 0) {
                 const orderIds = storeOrders.map(o => o.id);
-                await tx.storeOrderItem.deleteMany({ where: { orderId: { in: orderIds } } }).catch(() => { });
+                await tx.storeOrderItem.deleteMany({ where: { orderId: { in: orderIds } } });
             }
-            await tx.storeOrder.deleteMany({ where: { memberId } }).catch(() => { });
+            await tx.storeOrder.deleteMany({ where: { memberId } });
 
             // 9. Delete PT Sessions, then PT Member Account
-            await tx.pTSession.deleteMany({ where: { memberId } }).catch(() => { });
-            await tx.pTMemberAccount.deleteMany({ where: { memberId } }).catch(() => { });
+            await tx.pTSession.deleteMany({ where: { memberId } });
+            await tx.pTMemberAccount.deleteMany({ where: { memberId } });
 
             // 10. Finally delete the Member
             await tx.member.delete({ where: { id: memberId } });
 
             // 11. Delete linked User account so they cannot login anymore
             if (member.userId) {
-                await tx.user.delete({ where: { id: member.userId } }).catch(() => { });
+                await tx.user.delete({ where: { id: member.userId } });
             }
+        }, {
+            maxWait: 5000, // 5s to acquire connection
+            timeout: 30000 // 30s to execute (increased from default 5s)
         });
 
         res.json({ message: 'Member deleted successfully' });
@@ -1439,7 +1442,8 @@ const getCheckIns = async (req, res) => {
 
         const formatted = attendance.map(a => {
             const name = a.member?.name || a.user?.name || 'N/A';
-            const roleName = a.type === 'Member' ? 'Member' : (a.user?.role || a.type);
+            const isMember = a.type?.toLowerCase() === 'member';
+            const roleName = isMember ? 'Member' : (a.user?.role || a.type);
             const checkInTime = a.checkIn ? new Date(a.checkIn).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' }) : '-';
             const checkOutTime = a.checkOut ? new Date(a.checkOut).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' }) : '-';
 
@@ -1447,7 +1451,8 @@ const getCheckIns = async (req, res) => {
                 id: a.id,
                 name: name,
                 role: roleName,
-                type: a.type === 'Member' ? 'Member' : 'Staff',
+                type: isMember ? 'Member' : 'Staff',
+                checkInMethod: a.checkInMethod || 'manual',
                 time: checkInTime,
                 checkIn: checkInTime,
                 checkOut: checkOutTime,
@@ -1556,15 +1561,18 @@ const getLiveCheckIn = async (req, res) => {
             orderBy: { checkIn: 'desc' }
         });
 
-        const formatted = live.map(a => ({
-            id: a.id,
-            name: a.member?.name || a.user?.name || 'N/A',
-            type: a.type === 'Member' ? 'Member' : 'Staff',
-            role: a.type === 'Member' ? 'Member' : (a.user?.role || a.type),
+        const formatted = live.map(a => {
+            const isMember = a.type?.toLowerCase() === 'member';
+            return {
+                id: a.id,
+                name: a.member?.name || a.user?.name || 'N/A',
+                type: isMember ? 'Member' : 'Staff',
+                role: isMember ? 'Member' : (a.user?.role || a.type),
             time: a.checkIn ? new Date(a.checkIn).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : '-',
-            status: 'checked-in',
-            avatar: a.member?.avatar || a.user?.avatar || null
-        }));
+                status: 'checked-in',
+                avatar: a.member?.avatar || a.user?.avatar || null
+            };
+        });
 
         res.json({ data: formatted });
     } catch (error) {

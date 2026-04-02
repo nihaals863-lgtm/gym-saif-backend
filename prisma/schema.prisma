@@ -1178,6 +1178,8 @@ model AccessLog {
   branchId         Int?
   attendanceResult String?
   status           String?  @default("ALLOWED")
+  imageUrl         String?  @db.Text
+  personTenantId   Int?
   createdAt        DateTime @default(now())
 
   @@index([branchId])

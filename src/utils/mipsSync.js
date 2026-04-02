@@ -69,7 +69,7 @@ const buildMemberObj = (member) => {
 
 const buildStaffObj = (user) => {
     const code = user.employeeCode || user.email?.split('@')[0] || String(user.id);
-    
+
     let configObj = {};
     if (user.config) {
         try {
@@ -132,7 +132,7 @@ const upsertPersonInMips = async (personObj, branchId) => {
         const mergedObj = cleanForUpdate({ ...existing, ...personObj });
         console.log('[mipsSync] Internal Update:', personObj.name);
         const updateRes = await client.put('/personInfo/person', mergedObj);
-        
+
         if (updateRes.data?.code !== 200 && updateRes.data?.code !== 0) {
             throw new Error(updateRes.data?.msg || 'Internal Update Failed');
         }
@@ -349,7 +349,7 @@ const syncUserToMips = async (user) => {
         return { success: true, ...upsertRes };
     } catch (err) {
         console.error('[mipsSync] SyncUserToMips Error:', err.message);
-        
+
         // Mark as failed in DB
         const prisma = require('../config/prisma');
         try {
@@ -357,8 +357,8 @@ const syncUserToMips = async (user) => {
                 where: { id: user.id },
                 data: { mipsSyncStatus: 'failed' }
             });
-        } catch (e) {}
-        
+        } catch (e) { }
+
         return { success: false, error: err.message };
     }
 };

@@ -88,22 +88,61 @@ const getDashboardSummary = async (req, res) => {
         }
 
         // Step 2 — filter MIPS device list to only registered devices
-        const filteredDevices = allMipsDevices.filter(d =>
-            d.deviceKey && allowedKeys.has(d.deviceKey)
-        );
+        // If no devices are registered for this branch, fall back to showing ALL MIPS devices
+        // (same as admin view — manager should see their gym's hardware)
+        const filteredDevices = allowedKeys.size > 0
+            ? allMipsDevices.filter(d => d.deviceKey && allowedKeys.has(d.deviceKey))
+            : allMipsDevices; // fallback: show all when branch has no specific device records
 
-        // Step 3 — filter access records to only registered devices
-        const allRecords = data.acCheckRecordList || [];
-        const filteredRecords = allRecords.filter(r =>
-            r.deviceKey && allowedKeys.has(r.deviceKey)
-        );
+        // Step 3 — Fetch recent records from local DB
+        // Always include personTenantId fallback so manager sees their branch logs
+        // even if the device is registered under a different branchId (e.g., global/superadmin)
+        const recordsWhere = {};
+        if (branchId) {
+            const deviceKeyArr = Array.from(allowedKeys);
+            const orConditions = [{ personTenantId: branchId }];
+            if (deviceKeyArr.length > 0) {
+                orConditions.unshift({ deviceKey: { in: deviceKeyArr } });
+            }
+            // Also include devices from all MIPS devices if no registered ones
+            if (allowedKeys.size === 0) {
+                const allMipsKeys = allMipsDevices.map(d => d.deviceKey).filter(Boolean);
+                if (allMipsKeys.length > 0) {
+                    orConditions.unshift({ deviceKey: { in: allMipsKeys } });
+                }
+            }
+            recordsWhere.OR = orConditions;
+        } else {
+            // SuperAdmin global view — all devices
+            if (allowedKeys.size > 0) {
+                recordsWhere.deviceKey = { in: Array.from(allowedKeys) };
+            }
+            // else: no filter = show all
+        }
+
+        const recentLogs = await prisma.accessLog.findMany({
+            where: recordsWhere,
+            take: 10,
+            orderBy: { scanTime: 'desc' }
+        });
+
+        const formattedRecords = recentLogs.map(record => ({
+            id: record.id,
+            personName: record.personName || 'Stranger',
+            personSn: record.personId,
+            deviceName: record.deviceName || 'Device',
+            deviceKey: record.deviceKey,
+            createTime: record.scanTime,
+            passType: record.passType,
+            imageUrl: record.imageUrl
+        }));
 
         // Step 4 — recalculate counts from filtered devices/records
         const onlineCount = filteredDevices.filter(d => d.onlineFlag === 1).length;
         const offlineCount = filteredDevices.length - onlineCount;
 
-        // If no devices are registered in our DB → return all zeros
-        // Otherwise use MIPS aggregates (scoped to this branch's MIPS connection)
+        // Use MIPS aggregates for totals (since they aggregate over time)
+        // BUT use our local records for the list
         const noDevices = allowedKeys.size === 0;
 
         res.json({
@@ -118,16 +157,7 @@ const getDashboardSummary = async (req, res) => {
             visitorCountAll: noDevices ? 0 : (data.acCheckRecordMap?.visitorCountTal || 0),
             alcoholCountToday: noDevices ? 0 : (data.acCheckRecordMap?.alcoholCount || 0),
             alcoholCountAll: noDevices ? 0 : (data.acCheckRecordMap?.alcoholCountTal || 0),
-            records: filteredRecords.slice(0, 10).map(record => ({
-                id: record.id,
-                personName: record.personName,
-                personSn: record.personSn,
-                deviceName: record.deviceName,
-                deviceKey: record.deviceKey,
-                createTime: record.createTime,
-                passType: record.passType,
-                imageUrl: transformImagePath(record.checkImgUri)
-            }))
+            records: formattedRecords
         });
     } catch (error) {
         console.error('[getDashboardSummary]', error.message);
@@ -158,9 +188,10 @@ const getDeviceList = async (req, res) => {
         const connectionType = configRes.data?.data;
 
         // Step 2 — filter to only our registered devices
-        const filteredDevices = allMipsDevices.filter(d =>
-            d.deviceKey && allowedKeys.has(d.deviceKey)
-        );
+        // If branch has no registered devices, fall back to showing ALL MIPS devices
+        const filteredDevices = allowedKeys.size > 0
+            ? allMipsDevices.filter(d => d.deviceKey && allowedKeys.has(d.deviceKey))
+            : allMipsDevices; // fallback for manager view
 
         const devices = filteredDevices.map(device => {
             const lastRecord = recordData?.acCheckRecordList?.find(r => r.deviceKey === device.deviceKey);
@@ -187,38 +218,81 @@ const getDeviceList = async (req, res) => {
 // ─────────────────────────────────────────────────────────────
 const getAccessRecords = async (req, res) => {
     try {
-        const { page = 1, limit = 50 } = req.query;
-        const branchId = getBranchId(req);
+        const { page = 1, limit = 50, search, date, branchId: queryBranchId } = req.query;
+        const branchId = getBranchId(req) || (queryBranchId ? parseInt(queryBranchId) : null);
 
-        // Step 1 — allowed deviceKeys from our DB
-        const allowedKeys = await getAllowedDeviceKeys(branchId);
+        const skip = (parseInt(page) - 1) * parseInt(limit);
+        const take = parseInt(limit);
 
-        const client = await getMipsClient(branchId);
-        const response = await client.get(`/getAllAcCheckRecordCount?pageNum=${page}&pageSize=${limit}`);
-        const { data } = response.data;
+        const where = { AND: [] };
+        if (branchId) {
+            where.AND.push({
+                OR: [
+                    { branchId: branchId },
+                    { personTenantId: branchId }
+                ]
+            });
+        }
 
-        if (!data || !data.acCheckRecordList) return res.json([]);
+        // 🔥 Added: Date Filtering (Robust)
+        if (date) {
+            const start = new Date(date);
+            start.setHours(0, 0, 0, 0);
+            const end = new Date(date);
+            end.setHours(23, 59, 59, 999);
+            
+            where.AND.push({
+                scanTime: {
+                    gte: start,
+                    lte: end
+                }
+            });
+        }
 
-        // Step 2 — filter records to only registered devices
-        const filteredRecords = data.acCheckRecordList.filter(r =>
-            r.deviceKey && allowedKeys.has(r.deviceKey)
-        );
+        if (search) {
+            where.AND.push({
+                OR: [
+                    { personName: { contains: search } },
+                    { personId: { contains: search } },
+                    { deviceName: { contains: search } }
+                ]
+            });
+        }
 
-        const records = filteredRecords.map(record => ({
+        const [records, total] = await Promise.all([
+            prisma.accessLog.findMany({
+                where: where.AND.length > 0 ? where : {},
+                orderBy: { scanTime: 'desc' },
+                skip,
+                take
+            }),
+            prisma.accessLog.count({ where: where.AND.length > 0 ? where : {} })
+        ]);
+
+        const formatted = records.map(record => ({
             id: record.id,
-            personName: record.personName,
-            personSn: record.personSn,
-            deviceName: record.deviceName,
+            personName: record.personName || 'Stranger',
+            personSn: record.personId,
+            deviceName: record.deviceName || 'MIPS Device',
             deviceKey: record.deviceKey,
-            createTime: record.createTime,
+            createTime: record.scanTime,
             passType: record.passType,
-            imageUrl: transformImagePath(record.checkImgUri)
+            imageUrl: record.imageUrl,
+            personTenantId: record.personTenantId,
+            scanTime: record.scanTime
         }));
 
-        res.json(records);
+        res.json({
+            data: {
+                acCheckRecordList: formatted,
+                acCheckRecordMap: {
+                    totalCountTal: total
+                }
+            }
+        });
     } catch (error) {
         console.error('[getAccessRecords]', error.message);
-        res.status(500).json({ message: 'Failed to fetch access records', error: error.message });
+        res.status(500).json({ message: 'Failed to fetch local access records', error: error.message });
     }
 };
 
