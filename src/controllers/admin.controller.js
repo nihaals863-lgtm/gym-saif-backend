@@ -1669,6 +1669,7 @@ const getTaskStats = async (req, res) => {
         };
         const branchId = resolveBranchId();
 
+        
         let where = {};
         if (role === 'SUPER_ADMIN') {
             if (branchId) where.tenantId = parseInt(branchId);
