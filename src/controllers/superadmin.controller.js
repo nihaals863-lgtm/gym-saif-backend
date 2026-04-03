@@ -500,12 +500,14 @@ const fetchDashboardCards = async (req, res) => {
         const gymsTrendDirection = gymsThisMonth > gymsLastMonth ? 'up' : gymsThisMonth < gymsLastMonth ? 'down' : 'stable';
 
         // --- TOTAL MEMBERS ---
-        const totalMembers = await prisma.user.count({ where: { role: 'MEMBER' } });
-        const membersThisMonth = await prisma.user.count({
-            where: { role: 'MEMBER', joinedDate: { gte: currentMonthStart } }
+        // Count from Member table (source of truth) — User table can have orphaned MEMBER records
+        // after failed cascaded deletes, causing inflated counts
+        const totalMembers = await prisma.member.count();
+        const membersThisMonth = await prisma.member.count({
+            where: { joinDate: { gte: currentMonthStart } }
         });
-        const membersLastMonth = await prisma.user.count({
-            where: { role: 'MEMBER', joinedDate: { gte: previousMonthStart, lte: previousMonthEnd } }
+        const membersLastMonth = await prisma.member.count({
+            where: { joinDate: { gte: previousMonthStart, lte: previousMonthEnd } }
         });
         let membersTrend;
         let membersTrendDirection;
