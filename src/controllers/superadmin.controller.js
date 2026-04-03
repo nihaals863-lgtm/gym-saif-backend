@@ -280,36 +280,118 @@ const deleteGym = async (req, res) => {
             return res.status(400).json({ message: 'Invalid ID' });
         }
 
-        // Use transaction for cascading delete
+        // Helper: safely run a delete (swallows errors for missing/empty relations)
+        const safe = async (fn) => { try { await fn(); } catch (e) { console.warn('Safe delete skipped:', e.message); } };
+
+        // Use transaction for cascading delete — order matters (children before parents)
         await prisma.$transaction(async (tx) => {
-            // Delete related data first
-            // 1. Users (Staff, Members, etc.)
-            await tx.user.deleteMany({ where: { tenantId } });
+            const w = { where: { tenantId } };
 
-            // 2. Members (Profile data)
-            await tx.member.deleteMany({ where: { tenantId } });
+            // ── Collect IDs needed for relational deletes (tables without tenantId) ──
+            const userIds = (await tx.user.findMany({ where: { tenantId }, select: { id: true } })).map(u => u.id);
+            const memberIds = (await tx.member.findMany({ where: { tenantId }, select: { id: true } })).map(m => m.id);
+            const leadIds = (await tx.lead.findMany({ where: { tenantId }, select: { id: true } })).map(l => l.id);
+            const invoiceIds = (await tx.invoice.findMany({ where: { tenantId }, select: { id: true } })).map(i => i.id);
+            const equipmentIds = (await tx.equipment.findMany({ where: { tenantId }, select: { id: true } })).map(e => e.id);
+            const amenityIds = (await tx.amenity.findMany({ where: { tenantId }, select: { id: true } })).map(a => a.id);
+            const orderIds = (await tx.storeOrder.findMany({ where: { tenantId }, select: { id: true } })).map(o => o.id);
+            const walletIds = (await tx.wallet.findMany({ where: { memberId: { in: memberIds } }, select: { id: true } })).map(wl => wl.id);
 
-            // 3. Plans
-            await tx.membershipPlan.deleteMany({ where: { tenantId } });
+            // ── Deepest children first (leaf tables WITHOUT tenantId) ──
+            // Store (StoreOrderItem has no tenantId → delete via orderId)
+            if (orderIds.length > 0) await tx.storeOrderItem.deleteMany({ where: { orderId: { in: orderIds } } });
+            await tx.storeOrder.deleteMany(w);
+            await safe(() => tx.storeProduct.deleteMany(w));
+            await safe(() => tx.storeCategory.deleteMany(w));
 
-            // 4. Classes & Bookings (Classes depend on Tenant, Bookings depend on Class/Member)
-            // Delete bookings first if we were being strict, but deleteMany on classes might cascade if configured in DB, 
-            // but Prisma requires manual deletion if relation is not set to Cascade in schema.
-            // For now, let's assume Members and Users are the main blockers.
-            // We should also delete other related models if they exist:
-            // Leads, Inventory, Lockers, Equipment, Invoices, Expenses, Payroll, etc.
+            // PT (Personal Training) — all have tenantId
+            await safe(() => tx.pTSession.deleteMany(w));
+            await safe(() => tx.pTMemberAccount.deleteMany(w));
+            await safe(() => tx.pTPackage.deleteMany(w));
 
-            await tx.lead.deleteMany({ where: { tenantId } });
-            await tx.inventory.deleteMany({ where: { tenantId } });
-            await tx.locker.deleteMany({ where: { tenantId } });
-            await tx.equipment.deleteMany({ where: { tenantId } });
-            await tx.invoice.deleteMany({ where: { tenantId } });
-            await tx.expense.deleteMany({ where: { tenantId } });
-            await tx.payroll.deleteMany({ where: { tenantId } });
+            // Amenities (Slot/Booking/Usage have no tenantId → delete via amenityId/memberId)
+            if (amenityIds.length > 0) {
+                await safe(() => tx.amenityUsage.deleteMany({ where: { amenityId: { in: amenityIds } } }));
+                await safe(() => tx.amenityBooking.deleteMany({ where: { amenityId: { in: amenityIds } } }));
+                await safe(() => tx.amenitySlot.deleteMany({ where: { amenityId: { in: amenityIds } } }));
+            }
+            await safe(() => tx.amenity.deleteMany(w));
+
+            // Coupons (UsedCoupon has no tenantId → delete via memberId)
+            if (memberIds.length > 0) await safe(() => tx.usedCoupon.deleteMany({ where: { memberId: { in: memberIds } } }));
+            await safe(() => tx.coupon.deleteMany(w));
+
+            // Communication & Chat
+            await safe(() => tx.chatMessage.deleteMany(w));
+            await safe(() => tx.communicationLog.deleteMany(w));
+            await safe(() => tx.messageTemplate.deleteMany(w));
+            await safe(() => tx.announcement.deleteMany(w));
+            // Notification has no tenantId → delete via userId
+            if (userIds.length > 0) {
+                await safe(() => tx.notification.deleteMany({ where: { userId: { in: userIds } } }));
+            }
+
+            // Bookings (no tenantId → delete via memberId) & Classes
+            if (memberIds.length > 0) await safe(() => tx.booking.deleteMany({ where: { memberId: { in: memberIds } } }));
+            await safe(() => tx.class.deleteMany(w));
+
+            // Finance (InvoiceItem has no tenantId → delete via invoiceId)
+            if (invoiceIds.length > 0) await tx.invoiceItem.deleteMany({ where: { invoiceId: { in: invoiceIds } } });
+            await tx.invoice.deleteMany(w);
+            await safe(() => tx.expense.deleteMany(w));
+            await safe(() => tx.expenseCategory.deleteMany(w));
+            await safe(() => tx.commission.deleteMany(w));
+
+            // Transactions & Wallets (no tenantId → delete via walletId/memberId)
+            if (walletIds.length > 0) await safe(() => tx.transaction.deleteMany({ where: { walletId: { in: walletIds } } }));
+            if (memberIds.length > 0) await safe(() => tx.wallet.deleteMany({ where: { memberId: { in: memberIds } } }));
+
+            // Attendance & Leave
+            await safe(() => tx.attendance.deleteMany(w));
+            await safe(() => tx.leaveRequest.deleteMany(w));
+            await safe(() => tx.trainerAvailability.deleteMany(w));
+            await safe(() => tx.payroll.deleteMany(w));
+
+            // Tasks
+            await safe(() => tx.task.deleteMany(w));
+
+            // Leads (FollowUp has no tenantId → delete via leadId)
+            if (leadIds.length > 0) await safe(() => tx.followUp.deleteMany({ where: { leadId: { in: leadIds } } }));
+            await safe(() => tx.lead.deleteMany(w));
+
+            // Equipment (MaintenanceRequest has no tenantId → delete via equipmentId)
+            if (equipmentIds.length > 0) await safe(() => tx.maintenanceRequest.deleteMany({ where: { equipmentId: { in: equipmentIds } } }));
+            await safe(() => tx.equipment.deleteMany(w));
+
+            // Fitness & Feedback
+            await safe(() => tx.dietPlan.deleteMany(w));
+            await safe(() => tx.workoutPlan.deleteMany(w));
+            // MemberProgress has no tenantId → delete via memberId
+            if (memberIds.length > 0) await safe(() => tx.memberProgress.deleteMany({ where: { memberId: { in: memberIds } } }));
+            await safe(() => tx.feedback.deleteMany(w));
+            await safe(() => tx.reward.deleteMany(w));
+            // NOTE: serviceRequest model does not exist in schema — intentionally omitted
+
+            // Hardware / Devices
+            await safe(() => tx.accessLog.deleteMany({ where: { branchId: tenantId } }));
+            await safe(() => tx.device.deleteMany({ where: { tenantId } }));
+
+            // Lockers & Inventory
+            await safe(() => tx.locker.deleteMany(w));
+            await safe(() => tx.inventory.deleteMany(w));
+
+            // ── Parent tables ──
+            await tx.member.deleteMany(w);
+            await tx.user.deleteMany(w);
+            await safe(() => tx.membershipPlan.deleteMany(w));
+            await safe(() => tx.tenantSettings.deleteMany({ where: { tenantId } }));
+            await safe(() => tx.subscription.deleteMany(w));
+            await safe(() => tx.saasPayment.deleteMany(w));
+            await safe(() => tx.mipsConnection.deleteMany({ where: { branchId: tenantId } }));
 
             // Finally delete the Tenant
             await tx.tenant.delete({ where: { id: tenantId } });
-        });
+        }, { timeout: 60000 });
 
         res.json({ message: 'Gym and all related data deleted successfully' });
     } catch (error) {
@@ -1227,10 +1309,63 @@ const addStaffMember = async (req, res) => {
 const deleteStaffMember = async (req, res) => {
     try {
         const { id } = req.params;
-        await prisma.user.delete({ where: { id: parseInt(id) } });
-        res.json({ message: 'Staff member deleted' });
+        const userId = parseInt(id);
+
+        if (isNaN(userId)) {
+            return res.status(400).json({ message: 'Invalid staff ID' });
+        }
+
+        await prisma.$transaction(async (tx) => {
+            // Helper to safely execute queries that may fail if table is missing or relationship is absent
+            const safe = async (fn) => { try { await fn(); } catch (e) { console.warn('Safe delete skipped:', e.message); } };
+
+            // 1. Unassign from Classes (trainerId)
+            await safe(() => tx.class.updateMany({ where: { trainerId: userId }, data: { trainerId: null } }));
+
+            // 2. Unassign from Members (trainerId)
+            await safe(() => tx.member.updateMany({ where: { trainerId: userId }, data: { trainerId: null } }));
+
+            // 3. Delete PT Sessions, Diet Plans, Workout Plans (where they are trainer)
+            await safe(() => tx.pTSession.deleteMany({ where: { trainerId: userId } }));
+            await safe(() => tx.dietPlan.deleteMany({ where: { trainerId: userId } }));
+            await safe(() => tx.workoutPlan.deleteMany({ where: { trainerId: userId } }));
+            
+            // 4. Delete Commissions (where they are trainer)
+            await safe(() => tx.commission.deleteMany({ where: { trainerId: userId } }));
+
+            // 5. Delete Attendance, Leave Requests, Payroll, and TrainerAvailability
+            await safe(() => tx.attendance.deleteMany({ where: { userId } }));
+            await safe(() => tx.leaveRequest.deleteMany({ where: { userId } }));
+            await safe(() => tx.payroll.deleteMany({ where: { staffId: userId } }));
+            await safe(() => tx.trainerAvailability.deleteMany({ where: { trainerId: userId } }));
+
+            // 6. Delete Tasks (assignedTo, creator, manager, staff)
+            await safe(() => tx.task.deleteMany({ 
+                where: { OR: [{ assignedToId: userId }, { creatorId: userId }, { managerId: userId }, { staffId: userId }] } 
+            }));
+
+            // 7. Delete Chat Messages (sender, receiver)
+            await safe(() => tx.chatMessage.deleteMany({ 
+                where: { OR: [{ senderId: userId }, { receiverId: userId }] } 
+            }));
+
+            // 8. Delete Notifications and AuditLogs
+            await safe(() => tx.notification.deleteMany({ where: { userId } }));
+            await safe(() => tx.auditLog.deleteMany({ where: { userId } }));
+
+            // 9. If the user was also a member, we need to unassign userId instead of deleting the member
+            await safe(() => tx.member.updateMany({ where: { userId }, data: { userId: null } }));
+
+            // 10. Finally delete the User
+            await tx.user.delete({ where: { id: userId } });
+        }, {
+            timeout: 30000 // 30 seconds for safe cascade
+        });
+
+        res.json({ message: 'Staff member deleted successfully' });
     } catch (error) {
-        res.status(500).json({ message: error.message });
+        console.error('Delete staff member error:', error);
+        res.status(500).json({ message: error.message || 'Failed to delete staff member' });
     }
 };
 

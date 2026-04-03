@@ -2,6 +2,7 @@
 const express = require('express');
 const {
     searchMembers,
+    searchAllForAttendance,
     checkIn,
     checkOut,
     getMyAttendance,
@@ -40,6 +41,7 @@ router.use(authorize('STAFF', 'TRAINER', 'SUPER_ADMIN', 'BRANCH_ADMIN', 'MANAGER
 router.get('/members', getMembers);
 router.post('/members', addMember);
 router.get('/members/search', searchMembers);
+router.get('/attendance/search-all', searchAllForAttendance);
 router.get('/members/:id', getMemberById);
 
 // Attendance

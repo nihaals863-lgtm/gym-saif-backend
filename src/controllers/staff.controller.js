@@ -238,13 +238,52 @@ const getBookingReport = async (req, res) => {
 
 const checkIn = async (req, res) => {
     try {
-        const { memberId } = req.body;
+        const { memberId, userId, type } = req.body;
         const { tenantId } = req.user;
 
         if (!tenantId && req.user.role !== 'SUPER_ADMIN') {
             return res.status(403).json({ message: 'Unauthorized: No branch access' });
         }
 
+        const { start, end } = getTodayRange();
+        const checkInType = type || 'Member';
+
+        // ── Trainer / Staff check-in ──
+        if ((checkInType === 'Trainer' || checkInType === 'Staff') && userId) {
+            const user = await prisma.user.findFirst({
+                where: {
+                    id: parseInt(userId),
+                    ...(req.user.role !== 'SUPER_ADMIN' ? { tenantId } : {})
+                }
+            });
+            if (!user) return res.status(404).json({ message: `${checkInType} not found in your branch` });
+            if (user.status !== 'Active') return res.status(403).json({ message: `${checkInType} is currently ${user.status}` });
+
+            const existing = await prisma.attendance.findFirst({
+                where: {
+                    userId: user.id,
+                    checkIn: { gte: start, lt: end },
+                    type: checkInType,
+                    ...(req.user.role !== 'SUPER_ADMIN' ? { tenantId } : {})
+                }
+            });
+            if (existing && !existing.checkOut) return res.status(400).json({ message: `${checkInType} already checked in` });
+            if (existing && existing.checkOut) return res.status(400).json({ message: `${checkInType} can only check in once per day` });
+
+            const attendance = await prisma.attendance.create({
+                data: {
+                    userId: user.id,
+                    memberId: null,
+                    type: checkInType,
+                    checkIn: new Date(),
+                    tenantId: tenantId || user.tenantId,
+                    status: 'Present'
+                }
+            });
+            return res.json({ success: true, message: `${checkInType} checked in successfully`, data: attendance });
+        }
+
+        // ── Member check-in (original flow) ──
         const member = await prisma.member.findFirst({
             where: {
                 id: parseInt(memberId),
@@ -255,7 +294,6 @@ const checkIn = async (req, res) => {
 
         if (!member) return res.status(404).json({ message: 'Member not found in your branch' });
 
-        // Production-grade checks
         if (member.status === 'Expired') {
             return res.status(403).json({ message: 'Membership expired. Please renew.' });
         }
@@ -263,8 +301,6 @@ const checkIn = async (req, res) => {
             return res.status(403).json({ message: `Member is currently ${member.status}` });
         }
 
-        // Check if already checked in today
-        const { start, end } = getTodayRange();
         const existingCheckIn = await prisma.attendance.findFirst({
             where: {
                 memberId: member.id,
@@ -277,8 +313,6 @@ const checkIn = async (req, res) => {
         if (existingCheckIn && !existingCheckIn.checkOut) {
             return res.status(400).json({ message: 'Member already checked in and inside the gym' });
         }
-
-        // Rule: Only once per day (as requested by user)
         if (existingCheckIn && existingCheckIn.checkOut) {
             return res.status(400).json({ message: 'Member can only check in once per day' });
         }
@@ -289,7 +323,7 @@ const checkIn = async (req, res) => {
                 userId: member.userId || null,
                 type: 'Member',
                 checkIn: new Date(),
-                tenantId: tenantId || member.tenantId, // Fallback to member's tenant if super admin
+                tenantId: tenantId || member.tenantId,
                 status: 'Present'
             }
         });
@@ -303,9 +337,32 @@ const checkIn = async (req, res) => {
 
 const checkOut = async (req, res) => {
     try {
-        const { memberId } = req.body;
+        const { memberId, userId, type } = req.body;
         const { tenantId } = req.user;
 
+        const checkOutType = type || 'Member';
+
+        // ── Trainer / Staff check-out ──
+        if ((checkOutType === 'Trainer' || checkOutType === 'Staff') && userId) {
+            const activeAttendance = await prisma.attendance.findFirst({
+                where: {
+                    userId: parseInt(userId),
+                    checkOut: null,
+                    type: checkOutType,
+                    ...(req.user.role !== 'SUPER_ADMIN' ? { tenantId } : {})
+                },
+                orderBy: { checkIn: 'desc' }
+            });
+            if (!activeAttendance) return res.status(400).json({ message: `No active check-in found for this ${checkOutType.toLowerCase()}` });
+
+            await prisma.attendance.update({
+                where: { id: activeAttendance.id },
+                data: { checkOut: new Date() }
+            });
+            return res.json({ success: true, message: `${checkOutType} checked out successfully` });
+        }
+
+        // ── Member check-out (original flow) ──
         const activeAttendance = await prisma.attendance.findFirst({
             where: {
                 memberId: parseInt(memberId),
@@ -1159,8 +1216,86 @@ const getAttendanceHistory = async (req, res) => {
     }
 };
 
+// ── Unified search: Members + Trainers + Staff for attendance check-in ──
+const searchAllForAttendance = async (req, res) => {
+    try {
+        const { search, branchId } = req.query;
+        const { tenantId, role } = req.user;
+
+        if (!search || search.trim().length < 2) {
+            return res.json({ data: [] });
+        }
+
+        const effectiveTenantId = (branchId && branchId !== 'all') ? parseInt(branchId) :
+            (role === 'SUPER_ADMIN' ? undefined : tenantId);
+
+        const tenantFilter = effectiveTenantId ? { tenantId: effectiveTenantId } : {};
+        const searchStr = search.trim();
+
+        // Parallel search: members + users (trainers/staff)
+        const [members, users] = await Promise.all([
+            prisma.member.findMany({
+                where: {
+                    ...tenantFilter,
+                    status: 'Active',
+                    OR: [
+                        { name: { contains: searchStr } },
+                        { memberId: { contains: searchStr } },
+                        { phone: { contains: searchStr } }
+                    ]
+                },
+                select: { id: true, name: true, memberId: true, status: true, avatar: true, phone: true },
+                take: 8
+            }),
+            prisma.user.findMany({
+                where: {
+                    ...tenantFilter,
+                    status: 'Active',
+                    role: { in: ['TRAINER', 'STAFF'] },
+                    OR: [
+                        { name: { contains: searchStr } },
+                        { phone: { contains: searchStr } },
+                        { employeeCode: { contains: searchStr } }
+                    ]
+                },
+                select: { id: true, name: true, role: true, status: true, avatar: true, phone: true, employeeCode: true },
+                take: 8
+            })
+        ]);
+
+        const results = [
+            ...members.map(m => ({
+                id: m.id,
+                name: m.name,
+                code: m.memberId,
+                phone: m.phone,
+                status: m.status,
+                avatar: m.avatar,
+                personType: 'Member',
+                checkInPayload: { memberId: m.id, type: 'Member' }
+            })),
+            ...users.map(u => ({
+                id: u.id,
+                name: u.name,
+                code: u.employeeCode || u.role,
+                phone: u.phone,
+                status: u.status,
+                avatar: u.avatar,
+                personType: u.role === 'TRAINER' ? 'Trainer' : 'Staff',
+                checkInPayload: { userId: u.id, type: u.role === 'TRAINER' ? 'Trainer' : 'Staff' }
+            }))
+        ];
+
+        res.json({ data: results });
+    } catch (error) {
+        console.error('[searchAllForAttendance] Error:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
 module.exports = {
     searchMembers,
+    searchAllForAttendance,
     checkIn,
     checkOut,
     getMyAttendance,

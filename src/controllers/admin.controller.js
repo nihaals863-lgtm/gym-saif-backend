@@ -589,13 +589,13 @@ const deleteMember = async (req, res) => {
         }
 
         await prisma.$transaction(async (tx) => {
-            // 1. Delete Service Requests
-            await tx.serviceRequest.deleteMany({ where: { memberId } });
+            // Helper: safely run a delete (swallows errors for missing/empty relations)
+            const safe = async (fn) => { try { await fn(); } catch (e) { console.warn('Safe delete skipped:', e.message); } };
 
-            // 2. Delete Bookings
-            await tx.booking.deleteMany({ where: { memberId } });
+            // 1. Delete Class Bookings
+            await safe(() => tx.booking.deleteMany({ where: { memberId } }));
 
-            // 3. Delete Invoice Items first, then Invoices
+            // 2. Delete Invoice Items first, then Invoices
             const invoices = await tx.invoice.findMany({ where: { memberId }, select: { id: true } });
             if (invoices.length > 0) {
                 const invoiceIds = invoices.map(inv => inv.id);
@@ -603,44 +603,61 @@ const deleteMember = async (req, res) => {
             }
             await tx.invoice.deleteMany({ where: { memberId } });
 
-            // 4. Delete Attendance records
-            await tx.attendance.deleteMany({ where: { memberId } });
+            // 3. Delete Attendance records
+            await safe(() => tx.attendance.deleteMany({ where: { memberId } }));
 
-            // 5. Delete Wallet Transactions, then Wallet
+            // 4. Delete Wallet Transactions, then Wallet
             const wallet = await tx.wallet.findFirst({ where: { memberId } });
             if (wallet) {
                 await tx.transaction.deleteMany({ where: { walletId: wallet.id } });
                 await tx.wallet.delete({ where: { id: wallet.id } });
             }
 
-            // 6. Delete Member Progress
-            await tx.memberProgress.deleteMany({ where: { memberId } });
+            // 5. Delete Member Progress
+            await safe(() => tx.memberProgress.deleteMany({ where: { memberId } }));
 
-            // 7. Delete Feedback
-            await tx.feedback.deleteMany({ where: { memberId } });
+            // 6. Delete Feedback
+            await safe(() => tx.feedback.deleteMany({ where: { memberId } }));
 
-            // 8. Delete Store Order Items first, then Store Orders
+            // 7. Delete Store Order Items first, then Store Orders
             const storeOrders = await tx.storeOrder.findMany({ where: { memberId }, select: { id: true } });
             if (storeOrders.length > 0) {
                 const orderIds = storeOrders.map(o => o.id);
                 await tx.storeOrderItem.deleteMany({ where: { orderId: { in: orderIds } } });
             }
-            await tx.storeOrder.deleteMany({ where: { memberId } });
+            await safe(() => tx.storeOrder.deleteMany({ where: { memberId } }));
 
-            // 9. Delete PT Sessions, then PT Member Account
-            await tx.pTSession.deleteMany({ where: { memberId } });
-            await tx.pTMemberAccount.deleteMany({ where: { memberId } });
+            // 8. Delete PT Sessions, then PT Member Account
+            await safe(() => tx.pTSession.deleteMany({ where: { memberId } }));
+            await safe(() => tx.pTMemberAccount.deleteMany({ where: { memberId } }));
 
-            // 10. Finally delete the Member
-            await tx.member.delete({ where: { id: memberId } });
+            // 9. Delete Amenity Bookings & Usage (memberId FK)
+            await safe(() => tx.amenityBooking.deleteMany({ where: { memberId } }));
+            await safe(() => tx.amenityUsage.deleteMany({ where: { memberId } }));
 
-            // 11. Delete linked User account so they cannot login anymore
+            // 10. Delete Used Coupons (memberId FK)
+            await safe(() => tx.usedCoupon.deleteMany({ where: { memberId } }));
+
+            // 11. Delete Commissions (memberId FK)
+            await safe(() => tx.commission.deleteMany({ where: { memberId } }));
+
+            // 12. Delete Rewards
+            await safe(() => tx.reward.deleteMany({ where: { memberId } }));
+
+            // 13. Unassign Lockers (set assignedToId = null instead of deleting the locker)
+            await safe(() => tx.locker.updateMany({ where: { assignedToId: memberId }, data: { assignedToId: null, status: 'Available' } }));
+
+            // 14. Delete linked User notifications (via userId), then User account
             if (member.userId) {
-                await tx.user.delete({ where: { id: member.userId } });
+                await safe(() => tx.notification.deleteMany({ where: { userId: member.userId } }));
+                await safe(() => tx.user.delete({ where: { id: member.userId } }));
             }
+
+            // 15. Finally delete the Member
+            await tx.member.delete({ where: { id: memberId } });
         }, {
-            maxWait: 5000, // 5s to acquire connection
-            timeout: 30000 // 30s to execute (increased from default 5s)
+            maxWait: 5000,
+            timeout: 30000
         });
 
         res.json({ message: 'Member deleted successfully' });
@@ -679,7 +696,7 @@ const getAllStaff = async (req, res) => {
 
         console.log(`[getAllStaff] User: ${email}, Role: ${role}, EffBranchId: ${effectiveBranchId}, UserTenant: ${userTenantId}`);
 
-        let where = { role: { in: ['STAFF', 'TRAINER', 'MANAGER', 'BRANCH_ADMIN'] } };
+        let where = { role: { in: ['STAFF', 'TRAINER', 'MANAGER'] } };
 
         if (role === 'SUPER_ADMIN') {
             if (effectiveBranchId && effectiveBranchId !== 'all') {
@@ -1392,6 +1409,9 @@ const getCheckIns = async (req, res) => {
             where.checkIn = { gte: startOfDay, lte: endOfDay };
         }
 
+        // Filter out orphaned records where both user and member are null
+        where.NOT = { userId: null, memberId: null };
+
         if (type === 'Member') {
             where.type = 'Member';
         } else if (type === 'Staff') {
@@ -1449,9 +1469,11 @@ const getCheckIns = async (req, res) => {
 
             return {
                 id: a.id,
+                userId: a.userId || null,
+                memberId: a.memberId || null,
                 name: name,
                 role: roleName,
-                type: isMember ? 'Member' : 'Staff',
+                type: a.type || (isMember ? 'Member' : 'Staff'),
                 checkInMethod: a.checkInMethod || 'manual',
                 time: checkInTime,
                 checkIn: checkInTime,
@@ -1553,7 +1575,11 @@ const getLiveCheckIn = async (req, res) => {
         }
 
         const live = await prisma.attendance.findMany({
-            where: { tenantId: tenantIdToUse, checkOut: null },
+            where: { 
+                tenantId: tenantIdToUse, 
+                checkOut: null,
+                NOT: { userId: null, memberId: null }
+            },
             include: {
                 user: { select: { name: true, role: true, avatar: true } },
                 member: { select: { name: true, memberId: true, avatar: true } }

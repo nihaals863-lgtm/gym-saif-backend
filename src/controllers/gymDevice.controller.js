@@ -134,7 +134,7 @@ const getDashboardSummary = async (req, res) => {
             deviceKey: record.deviceKey,
             createTime: record.scanTime,
             passType: record.passType,
-            imageUrl: record.imageUrl
+            imageUrl: transformImagePath(record.imageUrl)
         }));
 
         // Step 4 — recalculate counts from filtered devices/records
@@ -277,7 +277,7 @@ const getAccessRecords = async (req, res) => {
             deviceKey: record.deviceKey,
             createTime: record.scanTime,
             passType: record.passType,
-            imageUrl: record.imageUrl,
+            imageUrl: transformImagePath(record.imageUrl),
             personTenantId: record.personTenantId,
             scanTime: record.scanTime
         }));
