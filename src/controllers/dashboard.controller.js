@@ -146,10 +146,7 @@ exports.getManagerDashboard = async (req, res) => {
             }),
             prisma.accessLog.findMany({
                 where: {
-                    OR: [
-                        { branchId: tenantId },
-                        { personTenantId: tenantId }
-                    ],
+                    branchId: tenantId,
                     scanTime: { gte: today, lt: tomorrow }
                 },
                 take: 5,
@@ -241,10 +238,7 @@ exports.getStaffDashboard = async (req, res) => {
             }).then(async (m) => {
                 const h = await prisma.accessLog.count({
                     where: {
-                        OR: [
-                            { branchId: tenantId },
-                            { personTenantId: tenantId }
-                        ],
+                        branchId: tenantId,
                         scanTime: { gte: today, lt: tomorrow }
                     }
                 });
@@ -343,10 +337,7 @@ exports.getStaffDashboard = async (req, res) => {
             }),
             prisma.accessLog.findMany({
                 where: {
-                    OR: [
-                        { branchId: tenantId },
-                        { personTenantId: tenantId }
-                    ],
+                    branchId: tenantId,
                     scanTime: { gte: today }
                 },
                 take: 10,

@@ -80,11 +80,18 @@ const generatePayroll = async (req, res) => {
                 leaveDays += diffDays;
             });
 
-            // 4. Calculate Net Pay
+            // 4. Calculate Net Pay based on actual attendance + approved leaves
             const baseSalary = staff.baseSalary ? parseFloat(staff.baseSalary) : 0;
             const dailySalary = baseSalary / daysInMonth;
             
-            // Fetch Distributed PT Commissions for this month/year
+            // Worked days = Attendance days + Approved leaves (assuming paid leaves)
+            const payableDays = attendanceDays + leaveDays;
+            
+            // Total deduction for days not worked (Absences)
+            const unworkedDays = Math.max(0, daysInMonth - payableDays);
+            const attendanceDeduction = unworkedDays * dailySalary;
+
+            // Fetch PT Commissions
             const ptCommissions = await prisma.commission.findMany({
                 where: {
                     trainerId: staff.id,
@@ -96,13 +103,9 @@ const generatePayroll = async (req, res) => {
             });
 
             const ptCommissionSum = ptCommissions.reduce((acc, comm) => acc + parseFloat(comm.amount), 0);
-
-            // Total Commission = PT Distributed items sum only (Rounded to nearest integer as requested)
             const commissionAmount = Math.round(ptCommissionSum);
 
-            const leaveDeduction = isNaN(leaveDays * dailySalary) ? 0 : (leaveDays * dailySalary);
-            
-            const netPay = (baseSalary + commissionAmount) - leaveDeduction;
+            const netPay = (baseSalary - attendanceDeduction) + commissionAmount;
             const finalAmount = isNaN(netPay) ? 0 : (netPay > 0 ? netPay : 0);
 
             // Fetch existing record to avoid duplicate entries for same month/year
@@ -124,7 +127,7 @@ const generatePayroll = async (req, res) => {
                         attendanceDays,
                         leaveDays: isNaN(leaveDays) ? 0 : leaveDays,
                         commission: isNaN(commissionAmount) ? 0 : commissionAmount,
-                        leaveDeduction,
+                        leaveDeduction: attendanceDeduction,
                         amount: finalAmount,
                         status: 'Approved'
                     }
@@ -138,7 +141,7 @@ const generatePayroll = async (req, res) => {
                         attendanceDays,
                         leaveDays: isNaN(leaveDays) ? 0 : leaveDays,
                         commission: isNaN(commissionAmount) ? 0 : commissionAmount,
-                        leaveDeduction,
+                        leaveDeduction: attendanceDeduction,
                         amount: finalAmount,
                         year,
                         month,
@@ -235,8 +238,8 @@ const generatePayslip = async (req, res) => {
              return res.status(404).json({ error: 'Payroll not found' });
          }
 
-         if (payroll.status !== 'Paid' && payroll.status !== 'Processed') {
-             return res.status(400).json({ error: 'Payslip can only be generated for paid salaries' });
+         if (!['Paid', 'Processed', 'Approved'].includes(payroll.status)) {
+             return res.status(400).json({ error: 'Payslip can only be generated for approved or paid salaries' });
          }
 
          // Generate PDF
@@ -285,7 +288,8 @@ const generatePayslip = async (req, res) => {
          doc.text(`${parseFloat(payroll.commission).toFixed(2)}`, 400, currentY, { width: 150, align: 'right' });
          currentY += 20;
 
-         doc.text(`Leave Deductions (${payroll.leaveDays} days)`, startX, currentY);
+         const unworkedDays = Math.round(parseFloat(payroll.leaveDeduction) / (parseFloat(payroll.baseSalary) / 30));
+         doc.text(`Absence / Leave Deductions (${unworkedDays} days)`, startX, currentY);
          doc.text(`- ${parseFloat(payroll.leaveDeduction).toFixed(2)}`, 400, currentY, { width: 150, align: 'right' });
          currentY += 20;
          

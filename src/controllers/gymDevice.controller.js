@@ -100,18 +100,20 @@ const getDashboardSummary = async (req, res) => {
         const recordsWhere = {};
         if (branchId) {
             const deviceKeyArr = Array.from(allowedKeys);
-            const orConditions = [{ personTenantId: branchId }];
+            const orConditions = [];
             if (deviceKeyArr.length > 0) {
-                orConditions.unshift({ deviceKey: { in: deviceKeyArr } });
+                orConditions.push({ deviceKey: { in: deviceKeyArr } });
             }
             // Also include devices from all MIPS devices if no registered ones
             if (allowedKeys.size === 0) {
                 const allMipsKeys = allMipsDevices.map(d => d.deviceKey).filter(Boolean);
                 if (allMipsKeys.length > 0) {
-                    orConditions.unshift({ deviceKey: { in: allMipsKeys } });
+                    orConditions.push({ deviceKey: { in: allMipsKeys } });
                 }
             }
-            recordsWhere.OR = orConditions;
+            if (orConditions.length > 0) {
+                recordsWhere.OR = orConditions;
+            }
         } else {
             // SuperAdmin global view — all devices
             if (allowedKeys.size > 0) {

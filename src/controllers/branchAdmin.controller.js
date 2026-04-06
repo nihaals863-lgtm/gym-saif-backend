@@ -36,16 +36,18 @@ const getDashboardStats = async (req, res) => {
             // 3. Today's Check-ins (Manual + Hardware)
             prisma.attendance.count({ where: { ...whereClause, checkIn: { gte: startOfDay } } }).then(async (manual) => {
                 const activeBranchId = (whereClause.tenantId || req.user.tenantId);
-                const hardware = await prisma.accessLog.count({
-                    where: {
-                        OR: [
-                            { branchId: parseInt(activeBranchId) },
-                            { personTenantId: parseInt(activeBranchId) }
-                        ],
-                        scanTime: { gte: startOfDay, lt: endOfDay }
-                    }
-                });
-                return manual + hardware;
+                const branchIdNum = parseInt(activeBranchId);
+                
+                if (!isNaN(branchIdNum)) {
+                    const hardware = await prisma.accessLog.count({
+                        where: {
+                            branchId: branchIdNum,
+                            scanTime: { gte: startOfDay, lt: endOfDay }
+                        }
+                    });
+                    return manual + hardware;
+                }
+                return manual;
             }),
             // 4. Monthly Revenue (Invoices)
             prisma.invoice.aggregate({ where: { ...whereClause, status: 'Paid', paidDate: { gte: startOfMonth } }, _sum: { amount: true } }),
@@ -315,10 +317,7 @@ const getRecentActivities = async (req, res) => {
         const activeBranchId = (whereClause.user?.tenantId || req.user.tenantId);
         const recentHardwareLogs = await prisma.accessLog.findMany({
             where: {
-                OR: [
-                    { branchId: parseInt(activeBranchId) },
-                    { personTenantId: parseInt(activeBranchId) }
-                ]
+                branchId: parseInt(activeBranchId)
             },
             take: 5,
             orderBy: { scanTime: 'desc' }
@@ -1097,10 +1096,7 @@ const getLiveAccess = async (req, res) => {
         const activeBranchId = (whereClause.tenantId || req.user.tenantId);
         const hardwareLogs = await prisma.accessLog.findMany({
             where: {
-                OR: [
-                    { branchId: parseInt(activeBranchId) },
-                    { personTenantId: parseInt(activeBranchId) }
-                ],
+                branchId: parseInt(activeBranchId),
                 scanTime: { gte: startOfDay, lte: endOfDay }
             },
             orderBy: { scanTime: 'desc' },
@@ -1137,7 +1133,7 @@ const getLiveAccess = async (req, res) => {
             // We search by personTenantId and personId (which is usually the member's unique code or ID)
             const member = await prisma.member.findFirst({
                 where: { 
-                    tenantId: l.personTenantId || whereClause.tenantId,
+                    tenantId: whereClause.tenantId,
                     OR: [
                         { id: parseInt(l.personId) || -1 },
                         { uniqueCode: l.personId },
