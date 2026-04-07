@@ -35,17 +35,19 @@ const getDashboardStats = async (req, res) => {
             prisma.user.count({ where: { ...whereClause, role: 'TRAINER', status: 'Active' } }),
             // 3. Today's Check-ins (Manual + Hardware)
             prisma.attendance.count({ where: { ...whereClause, checkIn: { gte: startOfDay } } }).then(async (manual) => {
-                const activeBranchId = (whereClause.tenantId || req.user.tenantId);
-                const branchIdNum = parseInt(activeBranchId);
-                
-                if (!isNaN(branchIdNum)) {
-                    const hardware = await prisma.accessLog.count({
-                        where: {
-                            branchId: branchIdNum,
-                            scanTime: { gte: startOfDay, lt: endOfDay }
-                        }
-                    });
-                    return manual + hardware;
+                try {
+                    const activeBranchId = (whereClause.tenantId || req.user?.tenantId);
+                    if (activeBranchId) {
+                        const hardware = await prisma.accessLog.count({
+                            where: {
+                                branchId: parseInt(activeBranchId),
+                                scanTime: { gte: startOfDay, lt: endOfDay }
+                            }
+                        });
+                        return manual + hardware;
+                    }
+                } catch (accessLogErr) {
+                    console.warn("Hardware AccessLog skip:", accessLogErr.message);
                 }
                 return manual;
             }),
@@ -56,11 +58,11 @@ const getDashboardStats = async (req, res) => {
             // 5. New Leads (MTD)
             prisma.lead.count({ where: { ...whereClause, createdAt: { gte: startOfMonth } } }),
             // 6. Today's Classes
-            prisma.class.count({ where: { ...whereClause, bookings: { some: { date: { gte: startOfDay, lt: endOfDay } } } } }),
+            prisma.class.count({ where: { ...whereClause, bookings: { some: { date: { gte: startOfDay, lt: endOfDay } } } } }).catch(() => 0),
             // 7. Pending Approvals
-            prisma.serviceRequest.count({ where: { ...whereClause, status: 'Pending' } }),
+            prisma.serviceRequest.count({ where: { ...whereClause, status: 'Pending' } }).catch(() => 0),
             // 8. Equipment Data
-            prisma.equipment.findMany({ where: whereClause, select: { id: true, name: true, status: true, category: true } }),
+            prisma.equipment.findMany({ where: whereClause, select: { id: true, name: true, status: true, category: true } }).catch(() => []),
             // 9. Security Risks
             prisma.attendance.count({ where: { ...whereClause, user: { status: 'Inactive' }, checkIn: { gte: startOfDay } } }),
             // 10. Expiring Soon
@@ -314,19 +316,22 @@ const getRecentActivities = async (req, res) => {
         });
 
         // Fetch hardware logs
-        const activeBranchId = (whereClause.user?.tenantId || req.user.tenantId);
-        const recentHardwareLogs = await prisma.accessLog.findMany({
-            where: {
-                branchId: parseInt(activeBranchId)
-            },
-            take: 5,
-            orderBy: { scanTime: 'desc' }
-        });
+        const activeBranchId = (whereClause.user?.tenantId || req.user?.tenantId);
+        let recentHardwareLogs = [];
+        if (activeBranchId) {
+            recentHardwareLogs = await prisma.accessLog.findMany({
+                where: {
+                    branchId: parseInt(activeBranchId)
+                },
+                take: 5,
+                orderBy: { scanTime: 'desc' }
+            });
+        }
 
         // Merge and sort
-        const manualActivities = recentCheckIns.map(checkIn => ({
+        const manualActivities = (recentCheckIns || []).map(checkIn => ({
             id: `at-${checkIn.id}`,
-            member: checkIn.user.name,
+            member: checkIn.user?.name || 'Unknown',
             action: 'Manual Check-in',
             time: new Date(checkIn.checkIn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
             timestamp: new Date(checkIn.checkIn).getTime()
@@ -1174,7 +1179,7 @@ const getLiveAccess = async (req, res) => {
 // Get Renewal Alerts — expiring soon + recently expired members
 const getRenewalAlerts = async (req, res) => {
     try {
-        const tenantId = req.user.tenantId;
+        const whereClause = getWhereClause(req);
         const today = new Date();
         today.setHours(0, 0, 0, 0);
 
@@ -1199,7 +1204,7 @@ const getRenewalAlerts = async (req, res) => {
         // Expired in last 15 days
         const recentlyExpired = await prisma.member.findMany({
             where: {
-                tenantId,
+                ...whereClause,
                 expiryDate: { gte: minus15Days, lt: today }
             },
             include: { plan: { select: { name: true } } },
