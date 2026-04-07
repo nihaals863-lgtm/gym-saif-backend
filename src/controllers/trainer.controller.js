@@ -1075,12 +1075,52 @@ const getClassByIdForTrainer = async (req, res) => {
 // --- DIET PLANS ---
 const getDietPlans = async (req, res) => {
     try {
-        const plans = await prisma.dietPlan.findMany({
+        const templates = await prisma.dietPlan.findMany({
             where: { trainerId: req.user.id, tenantId: req.user.tenantId || 1, clientId: 0 },
             orderBy: { createdAt: 'desc' }
         });
-        res.json(plans);
+
+        // Fetch all assigned plans (where clientId > 0)
+        const assignedPlans = await prisma.dietPlan.findMany({
+            where: {
+                trainerId: req.user.id,
+                tenantId: req.user.tenantId || 1,
+                clientId: { gt: 0 }
+            },
+            select: {
+                name: true,
+                clientId: true
+            }
+        });
+
+        // Get unique member IDs from assigned plans
+        const clientIds = [...new Set(assignedPlans.map(ap => ap.clientId))];
+
+        // Fetch member details (name and avatar)
+        const members = await prisma.member.findMany({
+            where: { id: { in: clientIds } },
+            select: { id: true, name: true, avatar: true }
+        });
+
+        // Group members by plan name
+        const formattedPlans = templates.map(tpl => {
+            const assignedMembers = assignedPlans
+                .filter(ap => ap.name === tpl.name)
+                .map(ap => members.find(m => m.id === ap.clientId))
+                .filter(Boolean);
+
+            // De-duplicate members if needed
+            const uniqueAssigned = Array.from(new Map(assignedMembers.map(m => [m.id, m])).values());
+
+            return {
+                ...tpl,
+                assignedMembers: uniqueAssigned
+            };
+        });
+
+        res.json(formattedPlans);
     } catch (error) {
+        console.error('getDietPlans Error:', error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -1153,12 +1193,51 @@ const toggleDietPlanStatus = async (req, res) => {
 // --- WORKOUT PLANS ---
 const getWorkoutPlans = async (req, res) => {
     try {
-        const plans = await prisma.workoutPlan.findMany({
+        const templates = await prisma.workoutPlan.findMany({
             where: { trainerId: req.user.id, tenantId: req.user.tenantId || 1, clientId: 0 },
             orderBy: { createdAt: 'desc' }
         });
-        res.json(plans);
+
+        // Fetch all assigned workout plans (where clientId > 0)
+        const assignedPlans = await prisma.workoutPlan.findMany({
+            where: {
+                trainerId: req.user.id,
+                tenantId: req.user.tenantId || 1,
+                clientId: { gt: 0 }
+            },
+            select: {
+                name: true,
+                clientId: true
+            }
+        });
+
+        // Get unique member IDs from assigned plans
+        const clientIds = [...new Set(assignedPlans.map(ap => ap.clientId))];
+
+        // Fetch member details
+        const members = await prisma.member.findMany({
+            where: { id: { in: clientIds } },
+            select: { id: true, name: true, avatar: true }
+        });
+
+        // Group members by plan name
+        const formattedPlans = templates.map(tpl => {
+            const assignedMembers = assignedPlans
+                .filter(ap => ap.name === tpl.name)
+                .map(ap => members.find(m => m.id === ap.clientId))
+                .filter(Boolean);
+
+            const uniqueAssigned = Array.from(new Map(assignedMembers.map(m => [m.id, m])).values());
+
+            return {
+                ...tpl,
+                assignedMembers: uniqueAssigned
+            };
+        });
+
+        res.json(formattedPlans);
     } catch (error) {
+        console.error('getWorkoutPlans Error:', error);
         res.status(500).json({ message: error.message });
     }
 };
