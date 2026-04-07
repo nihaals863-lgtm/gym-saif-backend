@@ -1,4 +1,4 @@
-// gym_backend/src/middleware/auth.middleware.js
+// gym_backend/src/middleware/auth.middleware.j
 const jwt = require('jsonwebtoken');
 const prisma = require('../config/prisma');
 
