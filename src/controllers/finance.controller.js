@@ -543,6 +543,26 @@ const settleInvoice = async (req, res) => {
             }
         });
 
+        // Locker Activation Logic: If this invoice is for a locker and is now Paid, update locker status
+        if (updatedInvoice.status === 'Paid' && updatedInvoice.notes?.includes('Locker Assignment: #')) {
+            try {
+                const lockerNumber = updatedInvoice.notes.split('#')[1]?.trim();
+                if (lockerNumber) {
+                    await prisma.locker.updateMany({
+                        where: { 
+                            number: lockerNumber, 
+                            assignedToId: updatedInvoice.memberId,
+                            status: 'Reserved'
+                        },
+                        data: { status: 'Assigned' }
+                    });
+                    console.log(`[LockerActivation] Locker #${lockerNumber} activated for member ${updatedInvoice.memberId}`);
+                }
+            } catch (err) {
+                console.error('[LockerActivation] Error updating locker status:', err);
+            }
+        }
+
         // Activation logic: If this member has a PT account in 'Pending Payment' status, activate it
         if (updatedInvoice.memberId) {
             // Find PT accounts that might need activation or commission

@@ -145,8 +145,13 @@ const upsertPersonInMips = async (personObj, branchId) => {
         throw new Error(addRes.data?.msg || 'Internal Add Failed');
     }
 
+    // After creation, look up again to get the system-generated personId
     const created = await getMipsPersonBySn(personObj.personSn, client);
-    return { personId: String(created?.personId || 0), mipsPersonSn: personObj.personSn, action: 'created' };
+    if (!created || !created.personId) {
+        throw new Error('Person created in MIPS but could not be retrieved for ID lookup');
+    }
+
+    return { personId: String(created.personId), mipsPersonSn: personObj.personSn, action: 'created' };
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -229,7 +234,12 @@ const getBranchDeviceIds = async (branchId) => {
 // ─────────────────────────────────────────────────────────────
 
 const syncPersonToDevices = async (mipsPersonId, branchId) => {
-    if (!mipsPersonId) return { success: false, reason: 'No mipsPersonId provided' };
+    if (!mipsPersonId || isNaN(parseInt(mipsPersonId))) {
+        return { success: false, reason: `No valid mipsPersonId provided: ${mipsPersonId}` };
+    }
+
+    const mid = parseInt(mipsPersonId);
+    if (mid <= 0) return { success: false, reason: `Invalid personId: ${mid}` };
 
     const deviceIds = await getBranchDeviceIds(branchId);
     if (!deviceIds.length) return { success: false, reason: 'No devices found for branch' };
@@ -237,7 +247,7 @@ const syncPersonToDevices = async (mipsPersonId, branchId) => {
     try {
         const client = await getMipsClient(branchId);
         const res = await client.post('/through/device/syncPerson', {
-            personId: parseInt(mipsPersonId),
+            personId: mid,
             deviceIds,
             deviceNumType: '4',  // REQUIRED — do not remove
         });

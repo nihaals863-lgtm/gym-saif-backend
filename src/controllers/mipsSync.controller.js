@@ -10,7 +10,7 @@
  *   GET  /api/v1/mips-sync/status/staff/:userId
  */
 
-const { PrismaClient } = require('@prisma/client');
+const prisma = require('../config/prisma');
 const {
     buildMemberObj,
     buildStaffObj,
@@ -22,17 +22,16 @@ const {
     restoreHardwareAccess,
 } = require('../utils/mipsSync');
 
-const prisma = new PrismaClient();
-
 // ─────────────────────────────────────────────────────────────
 // HELPER: resolve branchId (SuperAdmin can override via body)
 // ─────────────────────────────────────────────────────────────
 const resolveBranchId = (req) => {
     const { role, tenantId } = req.user;
     if (role === 'SUPER_ADMIN') {
-        return req.body.branchId ? parseInt(req.body.branchId) : null;
+        const bodyBranchId = req.params.branchId || req.body.branchId || req.query.branchId;
+        return bodyBranchId ? parseInt(bodyBranchId) : null;
     }
-    return parseInt(tenantId);
+    return tenantId ? parseInt(tenantId) : null;
 };
 
 // ─────────────────────────────────────────────────────────────

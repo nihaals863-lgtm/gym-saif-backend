@@ -28,7 +28,8 @@ const {
     getBookingReport,
     getTodaysCheckIns,
     bulkCreateLockers,
-    getAttendanceHistory
+    getAttendanceHistory,
+    transferMembership
 } = require('../controllers/staff.controller');
 const { protect, authorize } = require('../middleware/auth.middleware');
 
@@ -43,6 +44,7 @@ router.post('/members', addMember);
 router.get('/members/search', searchMembers);
 router.get('/attendance/search-all', searchAllForAttendance);
 router.get('/members/:id', getMemberById);
+router.post('/members/transfer', transferMembership);
 
 // Attendance
 router.get('/attendance/today', getTodaysCheckIns);

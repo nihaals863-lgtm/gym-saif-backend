@@ -395,8 +395,7 @@ const getTodaysCheckIns = async (req, res) => {
         const tenantId = req.user.tenantId;
 
         const where = {
-            checkIn: { gte: start, lt: end },
-            type: 'Member'
+            checkIn: { gte: start, lt: end }
         };
 
         if (req.user.role !== 'SUPER_ADMIN') {
@@ -405,19 +404,27 @@ const getTodaysCheckIns = async (req, res) => {
 
         const checkIns = await prisma.attendance.findMany({
             where,
-            include: { member: { include: { plan: true } } },
+            include: { 
+                member: { include: { plan: true } },
+                user: true
+            },
             orderBy: { checkIn: 'desc' }
         });
 
         const formatted = checkIns.map(c => {
-            const m = c.member || {};
+            const m = c.member;
+            const u = c.user;
+            const name = m ? m.name : (u ? u.name : 'Unknown');
+            const code = m ? m.memberId : (u ? (u.employeeCode || u.role) : 'N/A');
+            const personType = c.type;
+            
             const checkInTime = new Date(c.checkIn);
             const checkOutTime = c.checkOut ? new Date(c.checkOut) : null;
 
             let duration = '-';
             if (checkInTime) {
-                const end = checkOutTime || new Date();
-                const diffMs = end - checkInTime;
+                const endT = checkOutTime || new Date();
+                const diffMs = endT - checkInTime;
                 const diffMins = Math.floor(diffMs / 60000);
                 const hours = Math.floor(diffMins / 60);
                 const mins = diffMins % 60;
@@ -426,14 +433,17 @@ const getTodaysCheckIns = async (req, res) => {
 
             return {
                 id: c.id,
-                name: m.name || 'Unknown',
-                code: m.memberId || 'N/A',
+                name,
+                code,
+                personType,
                 in: checkInTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
                 out: checkOutTime ? checkOutTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '-',
                 status: c.checkOut ? 'Checked-Out' : 'Inside',
                 duration: duration,
-                memberId: m.id,
-                plan: m.plan?.name || 'No Plan'
+                memberId: m ? m.id : null,
+                userId: u ? u.id : null,
+                plan: m?.plan?.name || (personType !== 'Member' ? '-' : 'No Plan'),
+                checkInPayload: m ? { memberId: m.id, type: 'Member' } : { userId: u.id, type: personType }
             };
         });
 
@@ -839,19 +849,76 @@ const getLockers = async (req, res) => {
 const assignLocker = async (req, res) => {
     try {
         const { id } = req.params;
-        const { memberId, memberName, isPaid, notes } = req.body;
+        const { memberId, memberName, isPaid, notes, price } = req.body;
+        const { tenantId: userTenantId } = req.user;
+
+        console.log('[LockerAssign] Received Request:', { id, memberId, memberName, isPaid, notes, price });
+
+        const targetPrice = parseFloat(price) || 0;
+        const billingEnabled = isPaid === true || isPaid === 'true';
+
+        console.log('[LockerAssign] Processing Logic:', { targetPrice, billingEnabled });
+
+        // Fetch member to get their tenantId for invoice creation
+        const member = await prisma.member.findUnique({
+            where: { id: parseInt(memberId) }
+        });
+
+        if (!member) {
+            console.error('[LockerAssign] Member not found:', memberId);
+            return res.status(404).json({ message: 'Member not found' });
+        }
 
         const updated = await prisma.locker.update({
             where: { id: parseInt(id) },
             data: {
-                status: 'Assigned',
+                status: billingEnabled ? 'Reserved' : 'Assigned',
                 assignedToId: parseInt(memberId),
-                isPaid: isPaid ?? false,
+                isPaid: billingEnabled,
+                price: targetPrice,
                 notes: notes || undefined
             }
         });
+
+        console.log('[LockerAssign] Locker Updated:', updated.id, 'Status:', updated.status);
+
+        // Create Invoice if billing is enabled
+        if (billingEnabled && targetPrice > 0) {
+            console.log('[LockerAssign] Creating Invoice...');
+            await prisma.invoice.create({
+                data: {
+                    tenantId: member.tenantId || userTenantId || updated.tenantId || 1,
+                    invoiceNumber: `INV-LCK-${Date.now()}`,
+                    memberId: member.id,
+                    amount: targetPrice,
+                    subtotal: targetPrice,
+                    balance: targetPrice,
+                    paidAmount: 0,
+                    taxRate: 0,
+                    taxAmount: 0,
+                    discount: 0,
+                    status: 'Unpaid',
+                    dueDate: new Date(),
+                    paymentMode: 'Cash',
+                    notes: `Locker Assignment: #${updated.number}`,
+                    items: {
+                        create: [{
+                            description: `Monthly Locker Fee: #${updated.number}`,
+                            quantity: 1,
+                            rate: targetPrice,
+                            amount: targetPrice
+                        }]
+                    }
+                }
+            });
+            console.log('[LockerAssign] Invoice Created Successfully');
+        } else {
+            console.log('[LockerAssign] Skipping Invoice Creation. BillingEnabled:', billingEnabled, 'TargetPrice:', targetPrice);
+        }
+
         res.json(updated);
     } catch (error) {
+        console.error('[LockerAssign] Error:', error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -1004,6 +1071,101 @@ const bulkCreateLockers = async (req, res) => {
     }
 };
 
+const transferMembership = async (req, res) => {
+    try {
+        const { fromMemberId, toMemberId, toBranchId, notes } = req.body;
+        const { tenantId: userTenantId } = req.user;
+
+        const fromMember = await prisma.member.findUnique({
+            where: { id: parseInt(fromMemberId) },
+            include: { plan: true }
+        });
+
+        if (!fromMember) return res.status(404).json({ message: 'Current member not found' });
+        if (!fromMember.plan) return res.status(400).json({ message: 'Member has no active plan' });
+        if (!fromMember.plan.allowTransfer) return res.status(403).json({ message: 'Plan does not allow transfer' });
+        if (fromMember.status !== 'Active') return res.status(400).json({ message: 'Only active memberships can be transferred' });
+
+        const today = new Date();
+        const expiry = new Date(fromMember.expiryDate);
+        if (expiry <= today) return res.status(400).json({ message: 'Membership already expired' });
+
+        const remainingMs = expiry.getTime() - today.getTime();
+        const remainingDays = Math.max(1, Math.ceil(remainingMs / (1000 * 60 * 60 * 24)));
+
+        const toMember = await prisma.member.findUnique({
+            where: { id: parseInt(toMemberId) }
+        });
+
+        if (!toMember) return res.status(404).json({ message: 'Receiver member not found' });
+        if (toMember.id === fromMember.id) return res.status(400).json({ message: 'Cannot transfer to the same member' });
+        
+        // Allowed only if receiver doesn't have an active plan or it's expired
+        if (toMember.status === 'Active' && toMember.planId) {
+             return res.status(400).json({ message: 'Receiver already has an active membership' });
+        }
+
+        const result = await prisma.$transaction(async (tx) => {
+            const transferLog = await tx.membershipTransfer.create({
+                data: {
+                    tenantId: userTenantId || fromMember.tenantId,
+                    fromMemberId: fromMember.id,
+                    toMemberId: toMember.id,
+                    planId: fromMember.planId,
+                    remainingDays: remainingDays,
+                    fromBranchId: fromMember.tenantId,
+                    toBranchId: parseInt(toBranchId) || fromMember.tenantId,
+                    notes: notes || `Transfer from ${fromMember.name} (ID: ${fromMember.memberId}) to ${toMember.name} (ID: ${toMember.memberId})`
+                }
+            });
+
+            await tx.member.update({
+                where: { id: fromMember.id },
+                data: {
+                    status: 'Transferred',
+                    planId: null,
+                    expiryDate: null
+                }
+            });
+
+            const newExpiry = new Date();
+            newExpiry.setDate(newExpiry.getDate() + remainingDays);
+
+            await tx.member.update({
+                where: { id: toMember.id },
+                data: {
+                    status: 'Active',
+                    planId: fromMember.planId,
+                    expiryDate: newExpiry,
+                    isTransferred: true,
+                    transferredFromId: fromMember.id,
+                    transferDate: new Date(),
+                    tenantId: parseInt(toBranchId) || toMember.tenantId
+                }
+            });
+
+            // Audit Log
+            await tx.auditLog.create({
+                data: {
+                    userId: req.user.id,
+                    action: 'Membership Transfer',
+                    module: 'Memberships',
+                    details: `Transferred ${fromMember.plan.name} from member ${fromMember.id} to ${toMember.id}`,
+                    ip: req.ip || '0.0.0.0',
+                    status: 'Success'
+                }
+            });
+
+            return transferLog;
+        });
+
+        res.json({ success: true, message: 'Membership transferred successfully', data: result });
+    } catch (error) {
+        console.error('[transferMembership] Error:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
 const addMember = async (req, res) => {
     try {
         const { tenantId } = req.user;
@@ -1011,7 +1173,8 @@ const addMember = async (req, res) => {
             name, email, phone, gender, dob, source, address,
             referralCode, idType, idNumber,
             emergencyName, emergencyPhone,
-            fitnessGoal, healthConditions
+            fitnessGoal, healthConditions,
+            planId, trainerId, startDate, benefits, avatar, duration
         } = req.body;
 
         if (!name || !email || !phone) {
@@ -1019,33 +1182,115 @@ const addMember = async (req, res) => {
         }
 
         const targetTenantId = tenantId || 1;
+        const bcrypt = require('bcryptjs');
+        const hashedPassword = await bcrypt.hash('123456', 10);
 
-        // Generate unique memberId
-        const count = await prisma.member.count({ where: { tenantId: targetTenantId } });
-        const memberId = `MEM - ${String(count + 1).padStart(4, '0')} `;
+        // Check for existing user
+        const existingUser = await prisma.user.findUnique({
+            where: { email }
+        });
 
+        if (existingUser) {
+            return res.status(400).json({ message: `A user with email ${email} already exists.` });
+        }
+
+        // Create User Record
+        const newUser = await prisma.user.create({
+            data: {
+                name,
+                email,
+                password: hashedPassword,
+                phone,
+                role: 'MEMBER',
+                tenantId: targetTenantId,
+                status: 'Active',
+                avatar: avatar || null,
+                address: address || null
+            }
+        });
+
+        // Calculate Plan Details
+        let planObj = null;
+        if (planId) {
+            planObj = await prisma.membershipPlan.findFirst({
+                where: { id: parseInt(planId), tenantId: targetTenantId }
+            });
+        }
+
+        const joinDate = startDate ? new Date(startDate) : new Date();
+        let expiryDate = null;
+        let finalPrice = 0;
+        const cycleMultiplier = parseInt(duration) || 1;
+
+        if (planObj) {
+            expiryDate = new Date(joinDate);
+            const totalDurationParam = planObj.duration * cycleMultiplier;
+
+            if (planObj.durationType === 'Days') {
+                expiryDate.setDate(expiryDate.getDate() + totalDurationParam);
+            } else if (planObj.durationType === 'Weeks') {
+                expiryDate.setDate(expiryDate.getDate() + (totalDurationParam * 7));
+            } else if (planObj.durationType === 'Years') {
+                expiryDate.setFullYear(expiryDate.getFullYear() + totalDurationParam);
+            } else {
+                expiryDate.setMonth(expiryDate.getMonth() + totalDurationParam);
+            }
+            finalPrice = parseFloat(planObj.price) * cycleMultiplier;
+        }
+
+        // Create Member Record
         const member = await prisma.member.create({
             data: {
-                memberId,
+                memberId: `MEM-${Date.now()}-${targetTenantId}`,
+                userId: newUser.id,
+                tenantId: targetTenantId,
                 name,
                 email,
                 phone,
-                gender: gender || null,
-                dob: dob || null,
-                source: source || 'Walk-in',
-                address: address || null,
-                referralCode: referralCode || null,
-                idType: idType || null,
-                idNumber: idNumber || null,
-                emergencyName: emergencyName || null,
-                emergencyPhone: emergencyPhone || null,
-                fitnessGoal: fitnessGoal || null,
-                medicalHistory: healthConditions || null,
-                tenantId: targetTenantId,
+                planId: planId ? parseInt(planId) : null,
                 status: 'Active',
-                joinDate: new Date(),
+                avatar: avatar || null,
+                gender,
+                dob,
+                source: source || 'Walk-in',
+                idType,
+                idNumber,
+                referralCode,
+                address,
+                emergencyName,
+                emergencyPhone,
+                fitnessGoal,
+                medicalHistory: healthConditions,
+                joinDate: joinDate,
+                expiryDate: expiryDate,
+                benefits: Array.isArray(benefits) ? JSON.stringify(benefits) : (benefits || null),
+                trainerId: trainerId ? parseInt(trainerId) : null
             }
         });
+
+        // Create Invoice if Plan Selected
+        if (planObj) {
+            await prisma.invoice.create({
+                data: {
+                    tenantId: targetTenantId,
+                    invoiceNumber: `INV-${Date.now()}-${targetTenantId}`,
+                    memberId: member.id,
+                    amount: finalPrice,
+                    subtotal: finalPrice,
+                    paymentMode: 'Cash',
+                    status: 'Unpaid',
+                    dueDate: new Date(),
+                    items: {
+                        create: [{
+                            description: `Membership Plan: ${planObj.name} (${cycleMultiplier} ${planObj.durationType === 'Months' ? 'Cycles' : planObj.durationType})`,
+                            quantity: 1,
+                            rate: finalPrice,
+                            amount: finalPrice
+                        }]
+                    }
+                }
+            });
+        }
 
         res.status(201).json(member);
     } catch (error) {
@@ -1321,5 +1566,6 @@ module.exports = {
     getBookingReport,
     getTodaysCheckIns,
     bulkCreateLockers,
-    getAttendanceHistory
+    getAttendanceHistory,
+    transferMembership
 };

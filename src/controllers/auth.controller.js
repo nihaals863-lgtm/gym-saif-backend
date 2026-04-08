@@ -13,18 +13,6 @@ const login = async (req, res) => {
         });
 
         if (!user || !(await bcrypt.compare(password, user.password))) {
-            // Log failed login attempt
-            await prisma.auditLog.create({
-                data: {
-                    userId: user ? user.id : 0, 
-                    action: 'Login Failure',
-                    module: 'Error',
-                    affectedEntity: `User Login: ${email}`,
-                    details: `Failed login attempt for ${email}: Invalid credentials`,
-                    ip: req.ip || req.headers['x-forwarded-for'] || '0.0.0.0',
-                    status: 'Open'
-                }
-            });
             return res.status(401).json({ message: 'Invalid email or password' });
         }
 
@@ -32,20 +20,6 @@ const login = async (req, res) => {
         if (user.role !== 'SUPER_ADMIN' && user.tenant?.status === 'Suspended') {
             const settings = await prisma.saaSSettings.findFirst();
             const supportNum = settings?.supportNumber || 'our support team';
-            
-            // Log access attempt to suspended tenant
-            await prisma.auditLog.create({
-                data: {
-                    userId: user.id,
-                    action: 'Suspended Access Attempt',
-                    module: 'Error',
-                    affectedEntity: `Tenant ID: ${user.tenantId}`,
-                    details: `User ${user.email} tried to access suspended branch ${user.tenant?.name}`,
-                    ip: req.ip || req.headers['x-forwarded-for'] || '0.0.0.0',
-                    status: 'Open'
-                }
-            });
-
             return res.status(403).json({ 
                 message: `This gym is currently suspended. Please contact support at ${supportNum}.`,
                 supportNumber: supportNum 
@@ -58,12 +32,12 @@ const login = async (req, res) => {
 
         res.cookie('token', token, {
             httpOnly: true,
-            secure: true, // MUST be true for SameSite='none'
-            sameSite: 'none', // Allows cross-origin cookies
-            maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+            secure: true,
+            sameSite: 'none',
+            maxAge: 7 * 24 * 60 * 60 * 1000
         });
 
-        // Log the login event
+        // Audit Log
         await prisma.auditLog.create({
             data: {
                 userId: user.id,
@@ -79,11 +53,19 @@ const login = async (req, res) => {
             ? await prisma.tenantSettings.findUnique({ where: { tenantId: user.tenantId } })
             : null;
 
+        // Fetch member avatar if needed
+        let avatar = user.avatar;
+        if (!avatar && user.role === 'MEMBER') {
+            const member = await prisma.member.findUnique({ where: { userId: user.id } });
+            avatar = member?.avatar;
+        }
+
         res.json({
             id: user.id,
             name: user.name,
             email: user.email,
             role: user.role,
+            avatar: avatar,
             tenantId: user.tenantId,
             branchName: user.tenant?.branchName,
             tenantName: user.tenant?.name,
@@ -104,6 +86,7 @@ const getMe = async (req, res) => {
     try {
         const user = req.user;
         let memberData = {};
+        let memberAvatar = null;
 
         const tenantSettings = user.tenantId
             ? await prisma.tenantSettings.findUnique({ where: { tenantId: user.tenantId } })
@@ -122,8 +105,8 @@ const getMe = async (req, res) => {
             });
 
             if (member) {
+                memberAvatar = member.avatar;
                 const benefits = member.plan?.benefits || [];
-                // Initialize with full limits from plan
                 const benefitWallet = {
                     classCredits: 10,
                     saunaSessions: 0,
@@ -139,16 +122,11 @@ const getMe = async (req, res) => {
                     });
                 }
 
-                // Subtract used credits based on bookings
                 member.bookings.forEach(b => {
                     const className = (b.class?.name || '').toLowerCase();
-                    if (className.includes('sauna')) {
-                        benefitWallet.saunaSessions = Math.max(0, benefitWallet.saunaSessions - 1);
-                    } else if (className.includes('ice bath')) {
-                        benefitWallet.iceBathCredits = Math.max(0, benefitWallet.iceBathCredits - 1);
-                    } else {
-                        benefitWallet.classCredits = Math.max(0, benefitWallet.classCredits - 1);
-                    }
+                    if (className.includes('sauna')) benefitWallet.saunaSessions = Math.max(0, benefitWallet.saunaSessions - 1);
+                    else if (className.includes('ice bath')) benefitWallet.iceBathCredits = Math.max(0, benefitWallet.iceBathCredits - 1);
+                    else benefitWallet.classCredits = Math.max(0, benefitWallet.classCredits - 1);
                 });
 
                 benefitWallet.ptSessions = benefitWallet.classCredits;
@@ -173,7 +151,7 @@ const getMe = async (req, res) => {
             role: user.role,
             phone: user.phone || '',
             address: user.address || '',
-            avatar: user.avatar || user.name.charAt(0),
+            avatar: user.avatar || memberAvatar || user.name.charAt(0),
             status: user.status || 'Active',
             tenantId: user.tenantId,
             branchName: user.tenant?.branchName,
@@ -197,57 +175,39 @@ const updateProfile = async (req, res) => {
 
         let finalData = { ...updateData };
         if (password) {
-            finalData.password = await bcrypt.hash(password, 10);
+            const salt = await bcrypt.genSalt(10);
+            finalData.password = await bcrypt.hash(password, salt);
         }
 
-        const user = await prisma.user.update({
+        const updatedUser = await prisma.user.update({
             where: { id: req.user.id },
             data: finalData
         });
 
-        if (user.role === 'MEMBER') {
-            await prisma.member.updateMany({
-                where: { userId: user.id },
-                data: {
-                    name: finalData.name,
-                    phone: finalData.phone
-                }
-            });
+        // If user is a member, sync phone and avatar to member table too
+        if (updatedUser.role === 'MEMBER') {
+            const memberRecord = await prisma.member.findUnique({ where: { userId: updatedUser.id } });
+            if (memberRecord) {
+                await prisma.member.update({
+                    where: { id: memberRecord.id },
+                    data: {
+                        phone: updatedUser.phone,
+                        avatar: updatedUser.avatar,
+                        name: updatedUser.name
+                    }
+                });
+            }
         }
 
-        res.json({
-            id: user.id,
-            name: user.name,
-            email: user.email,
-            role: user.role,
-            avatar: user.avatar
-        });
+        res.json({ message: 'Profile updated successfully', user: updatedUser });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
 };
 
-const changePassword = async (req, res) => {
-    try {
-        const { currentPassword, newPassword } = req.body;
-        const user = await prisma.user.findUnique({
-            where: { id: req.user.id }
-        });
-
-        if (!user || !(await bcrypt.compare(currentPassword, user.password))) {
-            return res.status(401).json({ message: 'Invalid current password' });
-        }
-
-        const hashedPassword = await bcrypt.hash(newPassword, 10);
-        await prisma.user.update({
-            where: { id: req.user.id },
-            data: { password: hashedPassword }
-        });
-
-        res.json({ message: 'Password changed successfully' });
-    } catch (error) {
-        res.status(500).json({ message: error.message });
-    }
+module.exports = {
+    login,
+    logout,
+    getMe,
+    updateProfile
 };
-
-module.exports = { login, logout, getMe, updateProfile, changePassword };

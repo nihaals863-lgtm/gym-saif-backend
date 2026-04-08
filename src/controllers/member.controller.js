@@ -1484,6 +1484,7 @@ const getMemberDashboard = async (req, res) => {
             memberInfo: {
                 id: member.id,
                 name: member.name,
+                avatar: member.avatar,
                 memberId: member.memberId,
                 branchName: member.tenant?.name || 'Main Branch',
                 status: member.status

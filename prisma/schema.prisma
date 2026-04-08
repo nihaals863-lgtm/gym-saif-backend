@@ -72,7 +72,7 @@ model User {
   phone            String?
   role             Role
   status           String         @default("Active")
-  avatar           String?
+  avatar           String?        @db.LongText
   tenantId         Int?
   joinedDate       DateTime       @default(now())
   lastLogin        DateTime?
@@ -272,7 +272,7 @@ model Member {
   expiryDate      DateTime?
   status          String            @default("Active")
   trainerId       Int?
-  avatar          String?
+  avatar          String?           @db.LongText
   benefits        String?           @db.LongText
   email           String?
   emergencyName   String?
@@ -309,6 +309,14 @@ model Member {
   serviceRequests ServiceRequest[]
   storeOrders     StoreOrder[]
   usedCoupons     UsedCoupon[]
+
+  isTransferred       Boolean           @default(false)
+  transferredFromId   Int?
+  transferDate        DateTime?
+  transferredFrom     Member?           @relation("TransferredFrom", fields: [transferredFromId], references: [id])
+  transfersTo         Member[]          @relation("TransferredFrom")
+  outgoingTransfers   MembershipTransfer[] @relation("TransferSender")
+  incomingTransfers   MembershipTransfer[] @relation("TransferReceiver")
 
   @@index([planId], map: "member_planId_fkey")
   @@index([tenantId], map: "member_tenantId_fkey")
@@ -359,6 +367,7 @@ model MembershipPlan {
   showInPurchase     Boolean  @default(true)
   showOnDashboard    Boolean  @default(true)
   members            Member[]
+  transfers          MembershipTransfer[]
   tenant             Tenant   @relation(fields: [tenantId], references: [id])
 
   @@index([tenantId], map: "membershipplan_tenantId_fkey")
@@ -772,7 +781,7 @@ model CommunicationLog {
 model TenantSettings {
   id                    Int     @id @default(autoincrement())
   tenantId              Int     @unique
-  logo                  String?
+  logo                  String?           @db.LongText
   timezone              String  @default("UTC")
   currency              String  @default("USD")
   whatsappEnabled       Boolean @default(false)
@@ -1195,4 +1204,25 @@ enum Role {
   STAFF
   TRAINER
   MEMBER
+}
+model MembershipTransfer {
+  id              Int      @id @default(autoincrement())
+  tenantId        Int
+  fromMemberId    Int
+  toMemberId      Int
+  planId          Int
+  transferDate    DateTime @default(now())
+  remainingDays   Int
+  fromBranchId    Int
+  toBranchId      Int
+  notes           String?  @db.Text
+  
+  fromMember      Member   @relation("TransferSender", fields: [fromMemberId], references: [id])
+  toMember        Member   @relation("TransferReceiver", fields: [toMemberId], references: [id])
+  plan            MembershipPlan @relation(fields: [planId], references: [id])
+
+  @@index([fromMemberId])
+  @@index([toMemberId])
+  @@index([tenantId])
+  @@map("membership_transfer")
 }

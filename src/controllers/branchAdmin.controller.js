@@ -1,18 +1,33 @@
 const prisma = require('../config/prisma');
 
 const getWhereClause = (req, prefix = '') => {
-    const { tenantId, role } = req.user;
+    const { tenantId, role, ownedTenantIds } = req.user;
     const { branchId } = req.query;
 
-    if (role === 'SUPER_ADMIN' || role === 'BRANCH_ADMIN' || role === 'MANAGER') {
+    if (role === 'SUPER_ADMIN') {
         if (branchId && branchId !== 'all' && branchId !== 'undefined' && branchId !== 'null') {
             return prefix ? { [prefix]: { tenantId: parseInt(branchId) } } : { tenantId: parseInt(branchId) };
-        } else if (branchId === 'all') {
-            return {};
+        }
+        return {}; // SuperAdmin sees all
+    }
+
+    if (role === 'BRANCH_ADMIN' || role === 'MANAGER') {
+        if (branchId && branchId !== 'all' && branchId !== 'undefined' && branchId !== 'null') {
+            const requestedBranchId = parseInt(branchId);
+            // Verify ownership if not SuperAdmin
+            if (ownedTenantIds && ownedTenantIds.includes(requestedBranchId)) {
+                return prefix ? { [prefix]: { tenantId: requestedBranchId } } : { tenantId: requestedBranchId };
+            }
+            // If they ask for a branch they don't own, fallback to their primary one
+            return prefix ? { [prefix]: { tenantId } } : { tenantId };
+        } else if (branchId === 'all' && role === 'BRANCH_ADMIN') {
+            // Restriction for Branch Admin viewing ALL branches
+            return prefix ? { [prefix]: { tenantId: { in: ownedTenantIds } } } : { tenantId: { in: ownedTenantIds } };
         }
     }
 
-    return role === 'SUPER_ADMIN' ? {} : (prefix ? { [prefix]: { tenantId } } : { tenantId });
+    // Default: restrict to primary tenantId
+    return prefix ? { [prefix]: { tenantId } } : { tenantId };
 };
 
 

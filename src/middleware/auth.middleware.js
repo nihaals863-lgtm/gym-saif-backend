@@ -26,8 +26,26 @@ const protect = async (req, res, next) => {
             return res.status(401).json({ message: 'User not found' });
         }
 
+        // --- Fetch owned tenants for BRANCH_ADMIN to ensure data isolation ---
+        if (user.role === 'BRANCH_ADMIN') {
+            const ownedTenants = await prisma.tenant.findMany({
+                where: {
+                    OR: [
+                        { id: user.tenantId || undefined },
+                        { owner: user.email || undefined },
+                        { owner: user.name || undefined }
+                    ].filter(cond => Object.values(cond)[0] !== undefined)
+                },
+                select: { id: true }
+            });
+            user.ownedTenantIds = ownedTenants.map(t => t.id);
+        } else {
+            // For other roles, they only have access to their own tenant
+            user.ownedTenantIds = user.tenantId ? [user.tenantId] : [];
+        }
+
         req.user = user;
-        console.log(`[Auth] User ${user.email} (${user.role}) authenticated. TenantId: ${user.tenantId}`);
+        console.log(`[Auth] User ${user.email} (${user.role}) authenticated. Owned Branches: ${user.ownedTenantIds.join(', ')}`);
         next();
     } catch (error) {
         res.status(401).json({ message: 'Not authorized, token failed' });
